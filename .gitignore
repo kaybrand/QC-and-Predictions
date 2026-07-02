@@ -6,7 +6,9 @@
 # --- explicitly tracked files at the repo root ---
 !.gitignore
 !README.md
-!Snakefile
+# NOTE: legacy bulk-filtering Snakefile is intentionally NOT tracked (removed from
+# git, still present on disk and functional) -- superseded by workflow/, kept only
+# for continuity with in-flight legacy usage.
 
 # --- explicitly tracked directories (code) ---
 !workflow/
