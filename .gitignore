@@ -1,0 +1,31 @@
+# QC-and-Predictions: this repo tracks pipeline CODE only.
+# Everything else in this directory (generated data, real per-dataset configs,
+# legacy one-off QC-decision scripts, editor/tool cruft) is ignored by default.
+*
+
+# --- explicitly tracked files at the repo root ---
+!.gitignore
+!README.md
+!Snakefile
+
+# --- explicitly tracked directories (code) ---
+!workflow/
+!workflow/**
+
+# Real per-dataset/per-run pipeline configs and cluster metadata: never tracked,
+# only the example templates are (re-included below).
+workflow/config/*
+!workflow/config/example_pipeline_config.yaml
+!workflow/config/example_cluster_metadata.tsv
+
+# Synapse manifests are regenerated live from Synapse each run — never tracked.
+**/synapse_manifests/
+
+# Snakemake / conda / R / Python / editor cruft that can surface inside workflow/
+**/.snakemake/
+**/__pycache__/
+**/*.pyc
+**/.ipynb_checkpoints/
+**/.Rhistory
+**/*.log
+**/.DS_Store

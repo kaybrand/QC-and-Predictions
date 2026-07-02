@@ -1,0 +1,24 @@
+name: filter_multiome
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  # ── Python ──────────────────────────────────────────────
+  - python=3.11
+
+  # ── ATAC fragment processing (filter_atac_fragments.py) ─
+  - bioconda::bedops        # sort-bed
+  - bioconda::htslib        # bgzip, tabix
+
+  # ── RNA count matrix processing (filter_rna_counts.py) ──
+  - conda-forge::anndata
+  - conda-forge::scipy      # sparse matrix I/O (scipy.io.mmwrite)
+  - conda-forge::numpy
+  - conda-forge::pandas     # CSV output path
+
+  # ── YAML (generate_dataset_yaml.py + Snakefile) ─────────
+  - conda-forge::pyyaml
+
+  # ── Workflow ─────────────────────────────────────────────
+  - bioconda::snakemake-minimal
