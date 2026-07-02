@@ -1,0 +1,17 @@
+name: e2g_jamboree
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12.5
+  - wget=1.21.4
+  - bedtools=2.31.1
+  - htslib=1.21
+  - r-base=4.4.1
+  - r-r.utils=2.12.3
+  - r-data.table=1.15.4
+  - r-matrix=1.6_5
+  - r-tidyverse=2.0.0
+  - r-optparse=1.7.5
+  - pandas=2.2.3
+  

@@ -1,0 +1,12 @@
+name: postprocess
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.11
+  - snakemake>=7
+  - pip
+  - pip:
+    - synapseclient
+prefix: /oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/postprocess
