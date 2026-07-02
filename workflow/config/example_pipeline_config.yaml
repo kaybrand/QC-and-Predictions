@@ -1,0 +1,67 @@
+# Example QC-and-Predictions pipeline config. Copy to {name}_pipeline_config.yaml
+# and fill in real values -- that file is gitignored (real paths/synIDs never committed).
+#
+# Supports clusters from multiple datasets in a single run (see the design plan's
+# "Multi-dataset support" section) -- `clusters` is nested by dataset. Everything
+# else here is global, applied identically across every dataset in this run.
+
+scE2G_dir: /oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G
+gtf: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz
+# pseudobulks_dir for a given dataset = {pseudobulks_root}/{dataset}/pseudobulks -- always
+# the archive-extracted root (one-time-per-dataset sbatch job, per the
+# qc-filter-pseudobulks skill), even for igvf0/igvf1: the sbaek1 pseudobulk directory
+# only has real data for those two datasets and 0-byte placeholders for everything
+# else, so standardizing avoids a dataset-dependent branch.
+pseudobulks_root: /scratch/users/kaybrand/pseudobulk/igvf
+scE2G_version: "1.2"
+
+# Passed through into scE2G's own config/config.yaml, identically for every dataset in
+# this run. Every key scE2G supports under its OPTIONS / REFERENCE FILES / WORKFLOW
+# PARAMS sections is reachable here (see scE2G_dir/config/config.yaml for the full
+# default set) -- anything omitted here just falls back to scE2G's own default.
+scE2G_options:
+  max_cell_count: 20000
+  make_IGV_tracks: true
+
+exclusion:
+  # "{dataset}/{cluster}" strings, not bare cluster names -- cluster names aren't
+  # guaranteed unique across datasets, so exclusion entries must be dataset-qualified.
+  user_specified: []
+  process_excluded_no_upload: false # true => run the pipeline for excluded clusters, skip all Synapse steps for them
+  auto_thresholds:
+    min_cell_count: 100
+    min_fragments_total: 2000000
+    min_umi_count: 1000000
+    # cell_count/fragments_total/umi_count are computed at Snakemake parse time
+    # (workflow/scripts/resolve_exclusions.py), from the QC guide and either the
+    # pre-existing filtered_cell_subsample_metrics.tsv or a merged per-cell-QC
+    # table -- NOT from scE2G's own qc_plots/all_qc_stats.tsv, which doesn't
+    # exist until scE2G has already run for that cluster. Any cluster whose
+    # computed stats fall below these thresholds is excluded for this run, in
+    # addition to `user_specified`. umi_count is skipped for ATAC-only clusters.
+    # Because this happens at parse time, excluded clusters never get a single
+    # rule instantiated for them, unless `process_excluded_no_upload` is set.
+
+synapse:
+  dry_run: true             # default; upload steps never push for real until explicitly disabled
+  confirm_delete: false     # default; stale/excluded entity deletion always requires explicit opt-in
+  confirm_overwrite: false  # default; overwriting an EXISTING entity in the shared "Multiome datasets" folder requires explicit opt-in
+  filtered_data_parent_id: syn53469844   # "Multiome datasets" -- not collaborative, {dataset}/{cluster}/{file}
+  predictions_parent_id: syn53469845     # collaborative (~10 models' files coexist); {dataset}/{cluster}/{file}
+  candidates_parent_id: syn75065641      # not collaborative; flat, no {dataset}/{cluster} nesting
+  features_parent_id: syn75936892        # collaborative; {dataset}/{cluster}/{file}
+
+# Nested by dataset -- one scE2G module instance (partitioned cell_clusters table +
+# results_dir) gets generated per distinct top-level key here, whether that's 3
+# datasets with 1 cluster each or 1 dataset with 500 clusters.
+clusters:
+  igvf10:
+    telohaec_crispri:
+      pseudobulk_annotation: telohaec_crispri  # pseudobulk annotation dir name (--cell-type for filter_*.py)
+      qc_guide: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks/plots/igvf10/telohaec_crispri/filtered_barcodes_with_subsamples.tsv.gz
+      models: [multiome_powerlaw_v3, scATAC_powerlaw_v3]
+  # igvf17:
+  #   example_atac_only_cluster:
+  #     pseudobulk_annotation: some_annotation_dir
+  #     qc_guide: /oak/.../plots/igvf17/example_atac_only_cluster/QC_filtered_excluding_BAD_SUBSAMPLE.tsv.gz
+  #     models: [scATAC_powerlaw_v3]   # RNA matrix never generated for this cluster

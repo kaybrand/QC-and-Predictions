@@ -21,6 +21,9 @@ workflow/config/*
 # Synapse manifests are regenerated live from Synapse each run — never tracked.
 **/synapse_manifests/
 
+# Per-dataset scE2G module glue, regenerated fresh from config every run — never tracked.
+workflow/rules/generated/
+
 # Snakemake / conda / R / Python / editor cruft that can surface inside workflow/
 **/.snakemake/
 **/__pycache__/
