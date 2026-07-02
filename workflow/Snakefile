@@ -1,0 +1,46 @@
+"""
+QC-and-Predictions: end-to-end pipeline from QC-filtered pseudobulks to
+Synapse-hosted scE2G data products, for one or more clusters across one or
+more datasets at a time.
+
+Usage:
+    mamba activate run_snakemake9
+    snakemake -s workflow/Snakefile \
+        --configfile workflow/config/{name}_pipeline_config.yaml \
+        --executor slurm --profile slurm.smk9 --use-conda -p
+
+See workflow/config/example_pipeline_config.yaml for the config schema.
+"""
+
+include: "rules/common.smk"
+
+# scE2G is an external, separately-maintained repo -- imported as a module
+# with an in-memory config override rather than copied into this repo (unlike
+# reformat.smk/candidates_features.smk, which reimplement logic from the
+# now-superseded IGVF/workflow repo).
+#
+# One module instance per distinct dataset among this run's clusters: scE2G
+# itself has no concept of "dataset" (it takes exactly one results_dir + one
+# cell_clusters table per invocation), so spanning multiple datasets in one
+# pipeline run means importing scE2G once per dataset, each with its own
+# partitioned config (built in common.smk). The module/use-rule blocks
+# themselves are generated as literal per-dataset files (common.smk,
+# SCE2G_MODULE_FILES) since neither `module NAME:` nor `use rule ... as
+# PATTERN` accepts a computed/f-string value -- only `include:` does.
+for _scE2G_module_file in SCE2G_MODULE_FILES:
+    include: _scE2G_module_file
+
+
+include: "rules/filter_pseudobulks.smk"
+include: "rules/reformat.smk"
+include: "rules/candidates_features.smk"
+include: "rules/synapse_manifest.smk"
+
+
+rule all:
+    input:
+        get_reformat_output_files(),
+        get_candidates_output_files(),
+        get_features_output_files(),
+        get_manifest_targets(),
+    default_target: True
