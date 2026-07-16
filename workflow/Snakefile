@@ -35,6 +35,7 @@ include: "rules/filter_pseudobulks.smk"
 include: "rules/reformat.smk"
 include: "rules/candidates_features.smk"
 include: "rules/synapse_manifest.smk"
+include: "rules/qc_stats.smk"
 
 
 rule all:
@@ -43,4 +44,6 @@ rule all:
         get_candidates_output_files(),
         get_features_output_files(),
         get_manifest_targets(),
+        get_qc_stats_targets(),
+        get_igv_track_files(),
     default_target: True
