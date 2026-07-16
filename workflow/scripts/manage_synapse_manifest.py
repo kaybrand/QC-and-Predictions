@@ -26,6 +26,25 @@ Scoping rules (see the design plan's "Synapse manifests" section):
 Cluster identity is always the (dataset, cluster) pair -- passed on the CLI
 as "dataset/cluster" tokens, since cluster names are only unique within
 their own dataset.
+
+--manifest-out is a single shared file across every dataset this pipeline
+has ever touched (RESULTS_DIR_BASE/synapse_manifests/{product}_manifest.tsv
+is dataset-agnostic), but any one invocation of this script only knows about
+--cluster-keys for the run that invoked it -- which may be just one dataset
+(e.g. when multiple datasets are run as separate Snakemake invocations to
+work around scE2G's macs2/predictions RESULTS_DIR bug, see common.smk's
+KNOWN LIMITATION comment). A plain overwrite of --manifest-out would silently
+drop every other dataset's rows the moment a second, narrower-scoped
+invocation runs. Instead: rows already in --manifest-out whose (dataset,
+cluster) is NOT among this invocation's own --cluster-keys are preserved
+as-is (they belong to some other run this invocation knows nothing about);
+only rows for this invocation's own cluster_keys are recomputed fresh here.
+This makes repeated invocations, scoped to any subset of datasets in any
+order, converge on one manifest covering the union of everything ever run --
+a stale entry for THIS invocation's own clusters (e.g. a threshold-renamed
+file) still correctly drops out, since to_delete keys are excluded from the
+freshly-recomputed rows exactly as before; only OTHER runs' rows are immune
+from that recomputation.
 """
 
 import argparse
@@ -40,9 +59,18 @@ import synapseutils
 def ensure_folder_path(syn, parent_id, path_parts, dry_run):
     """Walk/create each level of path_parts under parent_id, returning the final folder id.
     In dry-run mode, missing folders are not created -- callers should only need the id
-    for entities that will actually be synced for real."""
+    for entities that will actually be synced for real.
+
+    Once a placeholder is introduced (a folder that doesn't exist yet and would need to
+    be created), every remaining path part is ALSO a placeholder -- Synapse can't be
+    queried for children of a folder that doesn't exist. Querying it anyway sends the
+    literal "<would-create:...>" string as a Synapse ID and gets a 400 from the API.
+    """
     current = parent_id
     for part in path_parts:
+        if isinstance(current, str) and current.startswith("<would-create:"):
+            current = f"<would-create:{part}>"
+            continue
         children = {c["name"]: c["id"] for c in syn.getChildren(current, includeTypes=["folder"])}
         if part in children:
             current = children[part]
@@ -94,6 +122,32 @@ def list_owned_entities(syn, parent_id, cluster_keys, nested, model_tokens):
                     }
                     break
     return owned
+
+
+def _row_belongs_to_cluster_keys(path, cluster_keys):
+    """True if `path` (a manifest row's "path" column) matches one of this
+    invocation's own (dataset, cluster) pairs, using the same heuristic as
+    the should_exist_files matching below (nested "/{d}/{c}/" segment, or
+    flat "{d}_{c}_" filename prefix)."""
+    normalized = path.replace(os.sep, "/")
+    basename = os.path.basename(path)
+    for dataset, cluster in cluster_keys:
+        if f"/{dataset}/{cluster}/" in normalized or basename.startswith(f"{dataset}_{cluster}_"):
+            return True
+    return False
+
+
+def load_preserved_rows(manifest_path, cluster_keys):
+    """Existing manifest rows belonging to some OTHER invocation's (dataset,
+    cluster) pairs -- kept as-is so this invocation's narrower scope can't
+    wipe them out. Rows belonging to THIS invocation's own cluster_keys are
+    deliberately excluded here; those get recomputed fresh from a live
+    Synapse query further down, same as before this function existed."""
+    if not os.path.exists(manifest_path):
+        return []
+    with open(manifest_path, newline="") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    return [row for row in rows if not _row_belongs_to_cluster_keys(row["path"], cluster_keys)]
 
 
 def synapse_key_for_local_path(local_path, dataset, cluster, nested):
@@ -190,7 +244,14 @@ def main():
             )
             sys.exit(1)
 
-    manifest_rows = []
+    preserved_rows = load_preserved_rows(args.manifest_out, cluster_keys)
+    if preserved_rows:
+        print(
+            f"[manage_synapse_manifest:{args.product}] preserving {len(preserved_rows)} row(s) already in "
+            f"{args.manifest_out} belonging to other (dataset, cluster) pairs outside this run's own --cluster-keys"
+        )
+
+    manifest_rows = list(preserved_rows)
     for key, local_path in {**to_upload_new, **to_overwrite}.items():
         dataset, cluster, name = key
         if args.nested:

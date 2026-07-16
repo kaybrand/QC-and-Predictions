@@ -12,6 +12,16 @@ matching this pipeline's "review before pushing to shared infrastructure"
 posture. These rules genuinely hit the network at DAG-execution time (unlike
 the parse-time config writers in common.smk), so they only run when actually
 targeted, not on every `snakemake -n`.
+
+Each manifest output is wrapped in Snakemake's built-in `update()` flag.
+Without it, Snakemake unconditionally deletes a rule's declared output file
+right before running its shell command (`Job.remove_existing_output` --
+confirmed by reading snakemake/jobs.py directly), which would erase this
+file's pre-existing content before manage_synapse_manifest.py ever gets a
+chance to read and merge it -- silently defeating that script's own
+merge-with-existing-content logic every single time, regardless of how
+correct that logic is. `update()` is Snakemake's own supported mechanism for
+"this output gets modified in place, don't wipe it first."
 """
 
 SYNAPSE_CFG = config.get("synapse", {})
@@ -57,7 +67,7 @@ rule manage_filtered_data_manifest:
     input:
         get_filtered_data_files(),
     output:
-        os.path.join(MANIFEST_DIR, "filtered_data_manifest.tsv"),
+        update(os.path.join(MANIFEST_DIR, "filtered_data_manifest.tsv")),
     params:
         parent_id=SYNAPSE_CFG.get("filtered_data_parent_id", ""),
         cluster_keys=cluster_keys_arg(),
@@ -84,7 +94,7 @@ rule manage_predictions_manifest:
     input:
         get_reformat_output_files(),
     output:
-        os.path.join(MANIFEST_DIR, "predictions_manifest.tsv"),
+        update(os.path.join(MANIFEST_DIR, "predictions_manifest.tsv")),
     params:
         parent_id=SYNAPSE_CFG.get("predictions_parent_id", ""),
         cluster_keys=cluster_keys_arg(),
@@ -112,7 +122,7 @@ rule manage_candidates_manifest:
     input:
         get_candidates_output_files(),
     output:
-        os.path.join(MANIFEST_DIR, "candidates_manifest.tsv"),
+        update(os.path.join(MANIFEST_DIR, "candidates_manifest.tsv")),
     params:
         parent_id=SYNAPSE_CFG.get("candidates_parent_id", ""),
         cluster_keys=cluster_keys_arg(),
@@ -138,7 +148,7 @@ rule manage_features_manifest:
     input:
         get_features_output_files(),
     output:
-        os.path.join(MANIFEST_DIR, "features_manifest.tsv"),
+        update(os.path.join(MANIFEST_DIR, "features_manifest.tsv")),
     params:
         parent_id=SYNAPSE_CFG.get("features_parent_id", ""),
         cluster_keys=cluster_keys_arg(),
