@@ -22,6 +22,10 @@ scE2G_version: "1.2"
 scE2G_options:
   max_cell_count: 20000
   make_IGV_tracks: true
+  # Standardized genome reference used by all other scE2G runs on pseudobulk data --
+  # keep consistent with that convention rather than scE2G's own intGENCODEv43 default.
+  gene_TSS500: resources/genome_annotations/CollapsedGeneBound.hg38.GENCODEv43GeneSymbol.TSS500bp.bed
+  genes: resources/genome_annotations/CollapsedGeneBound.hg38.GENCODEv43GeneSymbol.bed
 
 exclusion:
   # "{dataset}/{cluster}" strings, not bare cluster names -- cluster names aren't
