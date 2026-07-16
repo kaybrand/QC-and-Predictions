@@ -186,6 +186,44 @@ for _dataset in DATASETS:
     )
 
 # ---------------------------------------------------------------------------
+# KNOWN LIMITATION -- read before touching: two of ABC's own rule files
+# (ENCODE_rE2G/ABC/workflow/rules/macs2.smk, predictions.smk) render shell
+# commands with a plain, un-namespaced `{RESULTS_DIR}`/`{SCRIPTS_DIR}`
+# placeholder rather than a proper `{params...}`/`{output...}` reference.
+# Snakemake's shell-string formatting for those resolves them from this
+# pipeline's TOP-LEVEL namespace (empirically confirmed: removing our own
+# same-named global here changed a working `--outdir` into a hard
+# `NameError`, not a fix), not from a copy of ABC's own module-local scope --
+# so nested `use rule ... as` re-exporting (scE2G's own import of
+# ENCODE_rE2G, plus this pipeline's own per-dataset re-export on top of that)
+# does not properly isolate this variable per dataset. Since every Slurm
+# worker node re-parses this entire Snakefile (looping over every dataset in
+# DATASETS), a run spanning 2+ datasets would have every macs2/predictions
+# job pick up whichever dataset happened to be LAST in that loop -- silently
+# writing peaks/predictions to another dataset's directory for every other
+# dataset. This is upstream scE2G's bug, not fixable from here; tracked in
+# the scE2G-cwd-footgun-task.md doc alongside the SCRIPTS_DIR/os.getcwd()
+# issue (same root cause: plain globals referenced via shell placeholders
+# don't survive being imported as a module).
+#
+# Workaround, safe ONLY for single-dataset REAL EXECUTION (dry-run DAG
+# building across multiple datasets is unaffected -- shell commands are
+# never rendered/executed during a dry run): expose RESULTS_DIR as the last
+# dataset processed above. Do not rely on this for a real multi-dataset run
+# until the upstream fix lands -- run those one dataset at a time for now.
+# ---------------------------------------------------------------------------
+if len(DATASETS) > 1:
+    print(
+        f"[QC-and-Predictions] WARNING: {len(DATASETS)} datasets in this run "
+        f"({DATASETS}). Real execution of macs2/predictions rules is only "
+        "verified correct for a single dataset per run -- see the "
+        "KNOWN LIMITATION comment in common.smk before running this for real "
+        "(not just -n) with multiple datasets."
+    )
+if DATASETS:
+    RESULTS_DIR = RESULTS_DIRS[DATASETS[-1]]
+
+# ---------------------------------------------------------------------------
 # One scE2G `module` instance per dataset, generated as literal per-dataset
 # .smk files rather than a Python for-loop directly containing `module`/`use
 # rule` statements: those are Snakemake DSL keywords with their own grammar
@@ -212,6 +250,27 @@ for _dataset in DATASETS:
             f'        os.path.join(config["scE2G_dir"], "workflow", "Snakefile")\n'
             f'    config:\n'
             f'        SCE2G_CONFIGS["{_dataset}"]\n\n'
-            f'use rule * from {_module_name} as {_rule_prefix}_*\n'
+            # plot_stats is excluded: it rebuilds all_qc_stats.tsv from scratch every
+            # run, scoped only to clusters in THIS dataset's cell_clusters.tsv (i.e.
+            # only clusters ever run through this pipeline) -- it can't preserve rows
+            # for clusters processed outside this pipeline, or clusters untouched in
+            # this particular invocation. qc_stats.smk's aggregate_qc_stats rule
+            # replaces it, writing to the exact same output path
+            # (RESULTS_DIR/qc_plots/all_qc_stats.tsv), so the imported (unexcluded)
+            # `hover_plots` rule -- whose only input is that same path -- transparently
+            # depends on our replacement instead, with no changes needed on its end.
+            #
+            # `exclude` MUST precede `as` here: Snakemake 9.16.3's parser only
+            # recognizes the `exclude` keyword directly after `from MODULE`;
+            # once inside the `as`-clause state, "exclude" is swallowed as if it
+            # were literal text in the rename pattern instead of a keyword,
+            # silently producing a mangled name modifier like
+            # `sce2g_igvf10_*exclude plot_stats` and NOT actually excluding
+            # anything (confirmed empirically -- `as PREFIX_* exclude RULE`
+            # renamed every single imported rule with an "excludeplot_stats"
+            # suffix and left plot_stats' own output paths still claimed by
+            # the (renamed) original rule, silently shadowing our replacement
+            # rules without even raising Snakemake's usual AmbiguousRuleException).
+            f'use rule * from {_module_name} exclude plot_stats as {_rule_prefix}_*\n'
         )
     SCE2G_MODULE_FILES.append(_generated_path)

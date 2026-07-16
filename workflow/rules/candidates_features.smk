@@ -26,8 +26,8 @@ output layout; the dataset+cluster prefix in the filename is enough to keep
 outputs across datasets from colliding.
 """
 
-CANDIDATES_DIR = os.path.join(RESULTS_DIR, "candidate_e2g_pairs")
-FEATURES_DIR = os.path.join(RESULTS_DIR, "scE2G_features")
+CANDIDATES_DIR = os.path.join(RESULTS_DIR_BASE, "candidate_e2g_pairs")
+FEATURES_DIR = os.path.join(RESULTS_DIR_BASE, "scE2G_features")
 
 
 def get_candidates_output_files():
@@ -47,7 +47,7 @@ def get_features_output_files():
 
 def candidates_input_model_dir(wildcards):
     model = resolve_primary_model(config["clusters"][wildcards.dataset][wildcards.cluster]["models"])
-    return os.path.join(RESULTS_DIR, wildcards.dataset, wildcards.cluster, model, "scE2G_predictions.tsv.gz")
+    return os.path.join(RESULTS_DIR_BASE, wildcards.dataset, wildcards.cluster, model, "scE2G_predictions.tsv.gz")
 
 
 rule isolate_candidate_pairs:
