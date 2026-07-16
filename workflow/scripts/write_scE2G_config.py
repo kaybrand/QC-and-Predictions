@@ -21,9 +21,23 @@ among this run's included clusters -- see common.smk):
    "TODO: <field>" rather than silently left incomplete. Re-running this
    NEVER overwrites a value that isn't a TODO placeholder, so hand-filled
    gaps survive a later re-join once the lab annotation table catches up.
+
+Concurrency: under --executor slurm, EVERY worker node independently
+re-parses this pipeline's whole Snakefile (confirmed empirically -- each
+job's own log shows a fresh "Building DAG of jobs..."), and several jobs run
+concurrently. That means these two tables get read-merged-written by
+multiple processes at once. A plain read-then-truncate-then-write is not
+safe under that: one process's write (which truncates the file immediately
+on open) can be observed mid-write by another process's read, producing a
+torn/incomplete file and a KeyError downstream. _locked_read_merge_write
+guards against this with both an advisory flock (primary defense, serializes
+the whole read-merge-write) and a write-to-temp-then-os.replace (atomic
+rename, so even if a lock is ever not honored -- e.g. an unexpected NFS
+mount -- no reader can ever observe a half-written file).
 """
 
 import csv
+import fcntl
 import os
 
 LAB_ANNOTATIONS_PATH = "/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/scE2G_products_table/metadata/lab_annotations_with_cl.tsv"
@@ -60,7 +74,7 @@ def _resolve_cell_type_and_ontology(dataset, pseudobulk_annotation, lab_annotati
     return cell_type, ontology_id
 
 
-def _read_existing_tsv(path, key_col):
+def _read_tsv_rows(path, key_col):
     rows = {}
     if os.path.exists(path):
         with open(path) as f:
@@ -69,13 +83,38 @@ def _read_existing_tsv(path, key_col):
     return rows
 
 
-def _write_tsv(path, header, rows_by_key):
+def _atomic_write_tsv(path, header, rows_by_key):
+    """Write to a same-directory temp file, then atomically replace the target.
+    Guarantees any concurrent reader sees either the fully-old or fully-new
+    file, never a partial one (os.replace is atomic on the same filesystem)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", newline="") as f:
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=header, delimiter="\t")
         writer.writeheader()
         for key in sorted(rows_by_key):
             writer.writerow(rows_by_key[key])
+    os.replace(tmp_path, path)
+
+
+def _locked_read_merge_write(path, header, key_col, merge_fn):
+    """Read existing rows, let merge_fn add/update rows in place, write back --
+    the whole read-merge-write happens under an exclusive advisory lock on a
+    sibling `.lock` file, so concurrent worker-node processes serialize rather
+    than interleave. merge_fn(existing_rows: dict) is called with the freshly
+    read rows and must mutate/return the dict to write.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock_path = f"{path}.lock"
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        existing = _read_tsv_rows(path, key_col)
+        merged = merge_fn(existing)
+        _atomic_write_tsv(path, header, merged)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
 
 
 def write_cell_clusters_table(dataset, dataset_clusters_cfg, included_cluster_names, out_dir, out_dir_data, scE2G_dir):
@@ -90,53 +129,57 @@ def write_cell_clusters_table(dataset, dataset_clusters_cfg, included_cluster_na
     directory resolves to nothing (or the wrong thing) here.
     """
     path = os.path.join(out_dir, f"{dataset}_cell_clusters.tsv")
-    existing = _read_existing_tsv(path, "cluster")
 
-    for cluster in included_cluster_names:
-        cluster_cfg = dataset_clusters_cfg[cluster]
-        is_atac_only = cluster_cfg["models"] == ["scATAC_powerlaw_v3"]
-        atac_frag_file = os.path.join(out_dir_data, cluster, f"atac_fragments_{dataset}_{cluster}.tsv.gz")
-        rna_matrix_file = "" if is_atac_only else os.path.join(out_dir_data, cluster, f"rna_count_matrix_{dataset}_{cluster}")
-        existing[cluster] = {
-            "cluster": cluster,
-            "rna_matrix_file": rna_matrix_file,
-            "atac_frag_file": atac_frag_file,
-            "HiC_file": "", "HiC_type": "", "HiC_resolution": "",
-            "alt_TSS": "", "alt_genes": "",
-            "model_dir": ",".join(os.path.join(scE2G_dir, "models", m) for m in cluster_cfg["models"]),
-        }
+    def merge(existing):
+        for cluster in included_cluster_names:
+            cluster_cfg = dataset_clusters_cfg[cluster]
+            is_atac_only = cluster_cfg["models"] == ["scATAC_powerlaw_v3"]
+            atac_frag_file = os.path.join(out_dir_data, cluster, f"atac_fragments_{dataset}_{cluster}.tsv.gz")
+            rna_matrix_file = "" if is_atac_only else os.path.join(out_dir_data, cluster, f"rna_count_matrix_{dataset}_{cluster}")
+            existing[cluster] = {
+                "cluster": cluster,
+                "rna_matrix_file": rna_matrix_file,
+                "atac_frag_file": atac_frag_file,
+                "HiC_file": "", "HiC_type": "", "HiC_resolution": "",
+                "alt_TSS": "", "alt_genes": "",
+                "model_dir": ",".join(os.path.join(scE2G_dir, "models", m) for m in cluster_cfg["models"]),
+            }
+        return existing
 
-    _write_tsv(path, CELL_CLUSTERS_HEADER, existing)
+    _locked_read_merge_write(path, CELL_CLUSTERS_HEADER, "cluster", merge)
     return path
 
 
 def write_cluster_metadata_table(dataset, dataset_clusters_cfg, included_cluster_names, out_dir):
     path = os.path.join(out_dir, f"{dataset}_cluster_metadata.tsv")
-    existing = _read_existing_tsv(path, "cluster")
     lab_annotations = _load_lab_annotations(LAB_ANNOTATIONS_PATH)
 
-    for cluster in included_cluster_names:
-        cluster_cfg = dataset_clusters_cfg[cluster]
-        current = existing.get(cluster, {})
-        # Never clobber a manually-filled (non-TODO) value with a fresh join result.
-        if current.get("cell_type", "TODO").startswith("TODO") or "cell_type" not in current:
-            cell_type, ontology_id = _resolve_cell_type_and_ontology(
-                dataset, cluster_cfg["pseudobulk_annotation"], lab_annotations
-            )
-        else:
-            cell_type, ontology_id = current["cell_type"], current["ontology_id"]
+    def merge(existing):
+        for cluster in included_cluster_names:
+            cluster_cfg = dataset_clusters_cfg[cluster]
+            current = existing.get(cluster, {})
+            # Never clobber a manually-filled (non-TODO) value with a fresh join result.
+            if current.get("cell_type", "TODO").startswith("TODO") or "cell_type" not in current:
+                cell_type, ontology_id = _resolve_cell_type_and_ontology(
+                    dataset, cluster_cfg["pseudobulk_annotation"], lab_annotations
+                )
+            else:
+                cell_type, ontology_id = current["cell_type"], current["ontology_id"]
 
-        existing[cluster] = {
-            "cluster": cluster,
-            "ontology_id": ontology_id,
-            "cell_type": cell_type,
-            "summary": cluster,  # E2G Pillar Project convention: summary == cluster, unique within a dataset
-        }
+            existing[cluster] = {
+                "cluster": cluster,
+                "ontology_id": ontology_id,
+                "cell_type": cell_type,
+                "summary": cluster,  # E2G Pillar Project convention: summary == cluster, unique within a dataset
+            }
+        return existing
 
-    _write_tsv(path, CLUSTER_METADATA_HEADER, existing)
+    _locked_read_merge_write(path, CLUSTER_METADATA_HEADER, "cluster", merge)
     return path
 
 
 def load_cluster_metadata(path):
-    """Returns {cluster: {ontology_id, cell_type, summary}} for one dataset's table."""
-    return _read_existing_tsv(path, "cluster")
+    """Returns {cluster: {ontology_id, cell_type, summary}} for one dataset's table.
+    Read-only, no lock needed: writers only ever atomically replace this file, so a
+    concurrent reader sees either the fully-old or fully-new version, never a torn one."""
+    return _read_tsv_rows(path, "cluster")
