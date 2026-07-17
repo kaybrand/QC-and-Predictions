@@ -2,18 +2,18 @@
 exactly once, not re-derived in every table module that needs to link to
 it.
 
-prediction_set_alias()/rna_matrix_alias() reference tables not built yet
-(Prediction Set, Filtered Matrix Files) -- they raise a KeyError only if
-actually called before those tables are registered, which depends_on in
-each caller correctly prevents in practice (see orchestrator.py's
-plan_table).
+prediction_set_alias() references a table not built yet (Prediction Set)
+-- raises a KeyError only if actually called before it's registered,
+which depends_on in each caller correctly prevents in practice (see
+orchestrator.py's plan_table).
 
-atac_fragment_alias() now delegates to the real "filtered_atac_fragment_file"
-TableSpec -- every caller (Prediction Tabular Files' full/elements rows,
-Signal Files' derived_from, ATAC Index File's derived_from) needed
-("filtered_atac_fragment_file", "") added to their own depends_on once
-this table became real, same reasoning as prediction_set ->
-principal_pseudobulk_set.
+atac_fragment_alias()/rna_matrix_alias() now delegate to the real
+"filtered_atac_fragment_file"/"filtered_rna_count_matrix" TableSpecs --
+every caller (Prediction Tabular Files' full/elements/genes rows, Signal
+Files' derived_from, ATAC Index File's derived_from) needed the matching
+("filtered_atac_fragment_file"|"filtered_rna_count_matrix", "") added to
+their own depends_on once each table became real, same reasoning as
+prediction_set -> principal_pseudobulk_set.
 
 trained_model_file_alias() / trained_model_set_alias() name two different
 objects, not one ambiguous alias. "scE2G_{Family}_trained_model" is the
@@ -158,4 +158,29 @@ def primary_pseudobulk_atac_fragment_aliases(ctx):
         "Filtered ATAC Fragment Files' derived_from names 'contributing ATAC fragment "
         "files in primary pseudobulks' -- confirmed to exist on the portal and be "
         "computationally sourceable, but no lookup mechanism/formula given yet."
+    )
+
+
+def qc_guide_to_rna_matrix_analysis_step_version_alias(ctx):
+    raise NotImplementedError(
+        "Filtered Matrix Files' analysis_step_version names 'alias of QC guide to RNA "
+        "count matrix workflow version, to be created' -- not created/aliased yet."
+    )
+
+
+def primary_pseudobulk_h5ad_aliases(ctx):
+    """Same situation as primary_pseudobulk_atac_fragment_aliases, but for
+    the h5ad files within each contributing primary pseudobulk -- needed
+    for Filtered Matrix Files' derived_from."""
+    raise NotImplementedError(
+        "Filtered Matrix Files' derived_from names 'contributing h5ads in primary "
+        "pseudobulks' -- confirmed to exist on the portal and be computationally "
+        "sourceable, but no lookup mechanism/formula given yet."
+    )
+
+
+def rna_matrix_file_format_specifications_alias(ctx):
+    raise NotImplementedError(
+        "Filtered Matrix Files' file_format_specifications is explicitly '{alias TBD}' "
+        "-- not decided/given yet."
     )

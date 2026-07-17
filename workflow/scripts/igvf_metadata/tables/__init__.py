@@ -10,3 +10,4 @@ from . import documents  # noqa: F401
 from . import filtered_barcode_list  # noqa: F401
 from . import atac_index_file  # noqa: F401
 from . import filtered_atac_fragment_file  # noqa: F401
+from . import filtered_rna_count_matrix  # noqa: F401
