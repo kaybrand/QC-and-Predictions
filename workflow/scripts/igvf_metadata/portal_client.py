@@ -1,0 +1,137 @@
+"""Portal access for the IGVF metadata uploader: a read-only existence
+check via igvf_utils.connection.Connection, plus TSV generation and a
+subprocess wrapper around the real registration script --
+
+    /oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/igvf_utils/igvf_utils/MetaDataRegistration/iu_register.py
+
+Confirmed by reading that script and igvf_utils/connection.py directly
+(2026-07-13):
+  - PROFILE_KEY = "_profile", IGVFID_KEY = "_igvf_id" -- NOT "@type"/"uuid"
+    as an earlier draft of this file guessed.
+  - Connection.get(rec_ids, ignore404=True) returns {} (falsy) when not
+    found, not an exception -- matches get_by_alias's `or None` below.
+  - Real dry-run behavior lives inside Connection itself (constructed with
+    dry_run=...); iu_register.py never fakes it at the script level, so we
+    don't either.
+  - iu_register.py POSTs/PATCHes an entire TSV/JSON/JSONL file against ONE
+    profile at a time; PATCH rows are identified by a literal `record_id`
+    column in the input file (RECORD_ID_FIELD below), which iu_register.py
+    itself translates to IGVFID_KEY internally -- our TSV writer must use
+    "record_id", not "_igvf_id".
+  - It POSTs/PATCHes rows in a single Python loop with no per-row
+    try/except beyond a JSONDecodeError check -- an error partway through
+    one file can abort the remaining rows in that file. Callers of
+    invoke_register in "upload" mode should re-verify each intended row via
+    get_by_alias afterward rather than trusting the subprocess's exit code.
+"""
+
+import csv
+import json
+import os
+import subprocess
+import sys
+
+IU_REGISTER_DEFAULT_PATH = (
+    "/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/igvf_utils/igvf_utils/MetaDataRegistration/iu_register.py"
+)
+
+RECORD_ID_FIELD = "record_id"  # must match iu_register.py's RECORD_ID_FIELD exactly
+
+
+class PortalReader:
+    """Read-only: the idempotency check of record. Always trust the
+    portal's own answer over the local state ledger, since the ledger can
+    lag behind a crash between "portal accepted the write" and "ledger
+    commit". Cheap because aliases are directly addressable -- no
+    full-tree listing needed the way Synapse's getChildren requires.
+    Never performs a write; iu_register.py (via invoke_register) is the
+    only thing in this package that does."""
+
+    def __init__(self, igvf_mode=None):
+        self.igvf_mode = igvf_mode
+        self._conn = None
+
+    def _connection(self):
+        if self._conn is None:
+            from igvf_utils.connection import Connection  # deferred: only needed once we actually query
+
+            self._conn = Connection(igvf_mode=self.igvf_mode)
+        return self._conn
+
+    def get_by_alias(self, alias: str):
+        """Returns the portal record dict, or None if it doesn't exist yet."""
+        return self._connection().get(alias, ignore404=True) or None
+
+
+def _tsv_cell(value):
+    """Follows iu_register.py's create_payloads_from_tsv conventions: array
+    of scalars -> comma-joined (brackets optional, so we just omit them);
+    array of objects / bare object -> JSON; everything else -> str()."""
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        if value and isinstance(value[0], dict):
+            return json.dumps(list(value))
+        return ",".join(str(v) for v in value)
+    if isinstance(value, dict):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def write_tsv(path, rows, record_ids=None):
+    """rows: list[dict] of schema-property -> value, NOT including the
+    _profile key -- iu_register.py takes that as its --profile_id CLI arg,
+    one profile per file, and injects it into every payload itself.
+
+    record_ids: optional list, parallel to rows, of portal identifiers to
+    PATCH. When given, a `record_id` column is added -- iu_register.py's
+    own PATCH-row convention, not a name we're free to change.
+
+    Always written (never gated on upload permission): this is exactly the
+    file "for the user to peruse" in preview mode, and the same file gets
+    handed to iu_register.py verbatim when upload is actually permitted.
+    """
+    if not rows:
+        return None
+    columns = sorted({k for row in rows for k in row})
+    if record_ids is not None:
+        columns = [RECORD_ID_FIELD] + columns
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(columns)
+        for i, row in enumerate(rows):
+            values = dict(row)
+            if record_ids is not None:
+                values[RECORD_ID_FIELD] = record_ids[i]
+            writer.writerow([_tsv_cell(values.get(c)) for c in columns])
+    return path
+
+
+def invoke_register(
+    infile, profile_id, patch=False, dry_run=True, igvf_mode=None, iu_register_path=IU_REGISTER_DEFAULT_PATH
+):
+    """Shells out to the real igvf_utils registration script -- this is the
+    ONLY code path in this package that can ever perform a live write to
+    the portal, and only when dry_run=False. dry_run=True still invokes
+    the script (exercising its real schema validation/type-casting) but
+    passes --dry-run, so igvf_utils itself guarantees no write happens.
+
+    Returns the completed subprocess.CompletedProcess. See this module's
+    docstring: iu_register.py doesn't isolate one bad row from the rest of
+    its input file, so callers running for real should re-verify each row
+    via PortalReader.get_by_alias afterward rather than trusting returncode
+    alone.
+    """
+    cmd = [sys.executable, iu_register_path, "--profile_id", profile_id, "--infile", infile]
+    if patch:
+        cmd.append("--patch")
+    if dry_run:
+        cmd.append("--dry-run")
+    if igvf_mode:
+        cmd += ["--igvf-mode", igvf_mode]
+    return subprocess.run(cmd, capture_output=True, text=True)
