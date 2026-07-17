@@ -15,10 +15,7 @@ whether the portal wants these raw labels directly or references to actual
 Sample objects).
 """
 
-import csv
-import gzip
-
-from .. import refs, registry
+from .. import refs, registry, subsamples
 from ..context import make_alias
 from .prediction_tabular_files import family
 
@@ -27,15 +24,6 @@ TABLE_NAME = "prediction_set"
 
 def build_alias(ctx, variant_name):
     return make_alias(ctx.igvf, ctx.dataset, ctx.cluster, "scE2G", family(ctx.model), "predictions")
-
-
-def _unique_subsamples(ctx):
-    """The list of unique values in the cluster's local barcode-list file's
-    "subsamples" column -- one such file defines the barcodes present in
-    this cluster."""
-    with gzip.open(ctx.cluster_cfg["qc_guide"], "rt") as f:
-        reader = csv.DictReader(f, delimiter="\t")
-        return sorted({row["subsamples"] for row in reader})
 
 
 def _row(ctx):
@@ -51,7 +39,7 @@ def _row(ctx):
         "derived_from": ",".join(derived_from_parts),
         "documents": [make_alias(ctx.igvf, "E2G_prediction_set_files")],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
-        "samples": _unique_subsamples(ctx),  # TODO: raw labels vs Sample-object aliases -- see module docstring
+        "samples": subsamples.unique_subsamples(ctx),  # TODO: raw labels vs Sample-object aliases -- see module docstring
     }
 
 
