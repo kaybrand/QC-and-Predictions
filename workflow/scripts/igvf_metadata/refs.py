@@ -2,11 +2,18 @@
 exactly once, not re-derived in every table module that needs to link to
 it.
 
-prediction_set_alias()/atac_fragment_alias()/rna_matrix_alias() reference
-tables not built yet (Prediction Set, Filtered ATAC Fragment Files,
-Filtered Matrix Files) -- they raise a KeyError only if actually called
-before those tables are registered, which depends_on in each caller
-correctly prevents in practice (see orchestrator.py's plan_table).
+prediction_set_alias()/rna_matrix_alias() reference tables not built yet
+(Prediction Set, Filtered Matrix Files) -- they raise a KeyError only if
+actually called before those tables are registered, which depends_on in
+each caller correctly prevents in practice (see orchestrator.py's
+plan_table).
+
+atac_fragment_alias() now delegates to the real "filtered_atac_fragment_file"
+TableSpec -- every caller (Prediction Tabular Files' full/elements rows,
+Signal Files' derived_from, ATAC Index File's derived_from) needed
+("filtered_atac_fragment_file", "") added to their own depends_on once
+this table became real, same reasoning as prediction_set ->
+principal_pseudobulk_set.
 
 trained_model_file_alias() / trained_model_set_alias() name two different
 objects, not one ambiguous alias. "scE2G_{Family}_trained_model" is the
@@ -124,4 +131,31 @@ def qc_guide_to_atac_fragment_analysis_step_version_alias(ctx):
     raise NotImplementedError(
         "ATAC Index File's analysis_step_version names 'alias of QC guide to ATAC "
         "fragment file workflow version, to be created' -- not created/aliased yet."
+    )
+
+
+def annotation_table_alias(ctx):
+    """Confirmed TBD: the annotation table's alias exists (or will exist)
+    on the portal and can be computationally sourced -- but the mechanism
+    isn't defined yet. Needed for Filtered ATAC Fragment Files'
+    derived_from."""
+    raise NotImplementedError(
+        "Filtered ATAC Fragment Files' derived_from names 'the annotation table' -- "
+        "confirmed to exist on the portal and be computationally sourceable, but no "
+        "lookup mechanism/formula given yet."
+    )
+
+
+def primary_pseudobulk_atac_fragment_aliases(ctx):
+    """Confirmed TBD: the ATAC fragment FILE aliases *within* each
+    contributing primary pseudobulk (distinct from the pseudobulk SET
+    alias itself, which IS known -- see
+    tables/principal_pseudobulk_set.py's _primary_pseudobulk_aliases,
+    "anshul-kundaje:{dataset}-{cluster}-{subsample}"). Also confirmed
+    computationally sourceable, mechanism not defined yet. Needed for
+    Filtered ATAC Fragment Files' derived_from."""
+    raise NotImplementedError(
+        "Filtered ATAC Fragment Files' derived_from names 'contributing ATAC fragment "
+        "files in primary pseudobulks' -- confirmed to exist on the portal and be "
+        "computationally sourceable, but no lookup mechanism/formula given yet."
     )
