@@ -29,8 +29,14 @@ request caching should live (one multireport fetch per run, not per
 cluster).
 
 qc_thresholds_document_alias() is confirmed and deterministic (used by
-both Principal Pseudobulk Set's and a later table's `documents`) --
+both Principal Pseudobulk Set's and Filtered Barcode Lists' `documents`) --
 scope="cluster", not cluster_model, same as Principal Pseudobulk Set.
+
+per_cell_quality_report_aliases() / plotting_analysis_step_version_alias()
+are true stubs -- Filtered Barcode Lists' derived_from (the per-cluster
+per-cell QC metric files, content_type "per-cell quality report") and
+analysis_step_version ("alias of plotting scripts analysis step version,
+to be created") don't have formulas yet.
 """
 
 from . import registry
@@ -97,3 +103,18 @@ def primary_pseudobulk_metadata(ctx):
 def qc_thresholds_document_alias(ctx):
     """Cluster-scoped (not cluster_model), like Principal Pseudobulk Set."""
     return make_alias(ctx.igvf, ctx.dataset, ctx.cluster, "QC_thresholds")
+
+
+def per_cell_quality_report_aliases(ctx):
+    raise NotImplementedError(
+        "Filtered Barcode Lists' derived_from names the per-cluster per-cell QC metric "
+        "files (content_type 'per-cell quality report' in the pseudobulks) with no alias "
+        "formula given yet -- fill in here once it is."
+    )
+
+
+def plotting_analysis_step_version_alias(ctx):
+    raise NotImplementedError(
+        "Filtered Barcode Lists' analysis_step_version names 'alias of plotting scripts "
+        "analysis step version, to be created' -- not created/aliased yet."
+    )

@@ -7,3 +7,4 @@ from . import bedpe_index_file  # noqa: F401
 from . import prediction_set  # noqa: F401
 from . import principal_pseudobulk_set  # noqa: F401
 from . import documents  # noqa: F401
+from . import filtered_barcode_list  # noqa: F401

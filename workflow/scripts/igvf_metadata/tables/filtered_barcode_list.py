@@ -1,0 +1,84 @@
+"""Filtered Barcode Lists -- object_type "tabular_file" (TODO: confirm
+portal profile id), scope "cluster" (one per dataset/cluster, not split by
+model -- same scope as Principal Pseudobulk Set, which this table's
+file_set points at).
+
+This is the object formerly informally called "the QC guide" in this
+package's own local-file terminology (cluster_cfg["qc_guide"]) -- that
+local path IS this table's submitted_file_name, "USUALLY" the standard
+plots/{dataset}/{cluster}/filtered_barcodes_with_subsamples.tsv.gz path but
+already free to point anywhere for a bespoke-filtered cluster, since
+cluster_cfg["qc_guide"] is itself a per-cluster config value with no fixed
+naming assumption. No new path builder needed.
+
+Confirmed field-by-field 2026-07-16. Two still-open stubs (both routed
+through refs.py so there's exactly one place to fill in):
+  - derived_from: the per-cluster per-cell QC metric files (content_type
+    "per-cell quality report" in the pseudobulks) -- no alias formula given
+    yet (refs.per_cell_quality_report_aliases).
+  - analysis_step_version: "alias of plotting scripts analysis step
+    version, to be created" -- doesn't exist yet (refs.plotting_analysis_step_version_alias).
+
+submitter_comment is genuinely optional/manual (per-cluster free text
+"explaining any additional filtering not described by the QC document") --
+read from cluster_cfg.get("submitter_comment"), omitted when absent since
+it's not in required_columns.
+
+documents references the same QC_thresholds Document as Principal
+Pseudobulk Set's own documents field (refs.qc_thresholds_document_alias) --
+not yet a registered table, so depends_on lists it, same pattern as
+elsewhere.
+"""
+
+from .. import refs, registry
+from ..context import make_alias
+
+TABLE_NAME = "filtered_barcode_list"
+
+
+def build_alias(ctx, variant_name):
+    return make_alias(ctx.igvf, ctx.dataset, ctx.cluster, "filtered_barcode_list")
+
+
+def _row(ctx):
+    return {
+        "file_format": "tsv",
+        "content_type": "filtered barcode list",
+        "documents": [refs.qc_thresholds_document_alias(ctx)],
+        "file_format_specifications": [make_alias(ctx.igvf, "filtered_barcode_list_format_specification")],
+        "derived_from": ",".join(refs.per_cell_quality_report_aliases(ctx)),
+        "description": (
+            f"Filtered list of 16-bp cell barcodes defining membership in the {ctx.cluster}; "
+            "see QC thresholds for a record of the filters applied"
+        ),
+        "submitter_comment": ctx.cluster_cfg.get("submitter_comment"),
+        "analysis_step_version": refs.plotting_analysis_step_version_alias(ctx),
+        "submitted_file_name": ctx.cluster_cfg["qc_guide"],  # "USUALLY" the standard path; already free to be bespoke
+    }
+
+
+def _scope_fields(ctx):
+    return {
+        "md5sum": None,  # left blank; igvf_utils computes+fills it from submitted_file_name
+        "file_set": refs.principal_pseudobulk_set_alias(ctx),
+    }
+
+
+TABLE = registry.register(
+    registry.TableSpec(
+        name=TABLE_NAME,
+        object_type="tabular_file",  # TODO: confirm actual portal profile id
+        scope="cluster",
+        build_alias=build_alias,
+        required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type", "controlled_access"],
+        constant_fields={"controlled_access": False, "filtered": True, "derived_manually": False},
+        scope_fields=_scope_fields,
+        variants=[
+            registry.VariantSpec(
+                name="",
+                build_row=_row,
+                depends_on=lambda ctx: [("principal_pseudobulk_set", ""), ("documents", "")],
+            ),
+        ],
+    )
+)
