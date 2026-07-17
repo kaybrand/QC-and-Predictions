@@ -9,6 +9,11 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
+# This repo's own root -- mirrors workflow/rules/common.smk's
+# `WDIR = os.path.dirname(workflow.basedir)`, computed the equivalent way
+# since this package has no access to Snakemake's `workflow` object.
+WDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
 
 @dataclass(frozen=True)
 class IgvfConfig:
@@ -48,6 +53,12 @@ class Context:
     @property
     def cluster_dir(self):
         return os.path.join(self.results_dir, self.dataset, self.cluster)
+
+    @property
+    def multiome_data_cluster_dir(self):
+        """Mirrors common.smk's multiome_data_dir(dataset)/cluster -- the
+        Synapse-side filtered_data location, NOT scE2G's own results dir."""
+        return os.path.join(WDIR, "multiome_data", self.dataset, self.cluster)
 
     def with_model(self, model):
         return Context(self.dataset, self.cluster, model, self.cluster_cfg, self.igvf, self.scE2G_dir, self.cache)

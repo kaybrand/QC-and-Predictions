@@ -118,3 +118,10 @@ def plotting_analysis_step_version_alias(ctx):
         "Filtered Barcode Lists' analysis_step_version names 'alias of plotting scripts "
         "analysis step version, to be created' -- not created/aliased yet."
     )
+
+
+def qc_guide_to_atac_fragment_analysis_step_version_alias(ctx):
+    raise NotImplementedError(
+        "ATAC Index File's analysis_step_version names 'alias of QC guide to ATAC "
+        "fragment file workflow version, to be created' -- not created/aliased yet."
+    )
