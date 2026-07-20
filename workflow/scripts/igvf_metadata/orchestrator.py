@@ -69,10 +69,21 @@ def validate_row(table, variant_name, payload):
         raise ValueError(f"{table.name}/{variant_name}: missing required column(s) {missing}")
 
 
-def _iter_scopes(table, cluster_keys, cluster_configs):
+def _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
     for dataset, cluster in cluster_keys:
         cluster_cfg = cluster_configs[(dataset, cluster)]
-        models = cluster_cfg["models"] if table.scope == "cluster_model" else [None]
+        if table.scope == "cluster_model":
+            # Local import, not top-level: avoids a circular import (tables/*
+            # import registry, which orchestrator also imports), same pattern
+            # refs.py already uses. cluster_cfg["models"] reflects what scE2G
+            # actually ran for this cluster -- igvf_cfg.enabled_families is the
+            # separate, IGVF-specific gate on which of those families should
+            # actually be uploaded this run (Multiome-only in 2026).
+            from .tables.prediction_tabular_files import family
+
+            models = [m for m in cluster_cfg["models"] if family(m) in igvf_cfg.enabled_families]
+        else:
+            models = [None]
         for model in models:
             yield dataset, cluster, model, cluster_cfg
 
@@ -88,7 +99,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
     def bump(key):
         counts[key] = counts.get(key, 0) + 1
 
-    for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs):
+    for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
         ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir)
         model_key = model or ""
         for variant in table.variants:

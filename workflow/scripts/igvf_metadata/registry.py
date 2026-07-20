@@ -10,7 +10,7 @@ Field layering (see orchestrator.build_payload):
   base fields (aliases/award/lab -- identical for every row, every table)
   -> table.constant_fields (identical for every row of THIS table)
   -> table.scope_fields(ctx) (identical across variants for one scope-key,
-     e.g. file_set/cell_type_annotation)
+     e.g. file_set)
   -> variant.build_row(ctx) (the part that actually varies row to row)
 
 A row's dependencies (variant.depends_on) name other (table_name, variant)

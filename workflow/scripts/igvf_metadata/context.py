@@ -20,11 +20,19 @@ class IgvfConfig:
     """lab/award/alias_prefix are identical across all ~20 tables. Defaults
     are this lab's real values; override via the `igvf:` block in a
     *_pipeline_config.yaml so a different lab can reuse these scripts
-    without editing code."""
+    without editing code.
+
+    enabled_families gates which scE2G model families' cluster_model-scoped
+    rows (Prediction Tabular Files, Signal Files, BEDPE Index File,
+    Prediction Set) actually get generated this run -- 2026-07-20 feedback:
+    only Multiome is uploaded this year even though a cluster's own `models`
+    config may list scATAC too (that list reflects what scE2G ran, not what
+    IGVF should receive). Enforced centrally in orchestrator._iter_scopes."""
 
     lab: str = "/labs/jesse-engreitz/"
-    award: str = "/awards/HG011972"
+    award: str = "/awards/HG011972/"
     alias_prefix: str = "jesse-engreitz"
+    enabled_families: tuple = ("Multiome",)
 
     @classmethod
     def from_dict(cls, d):
@@ -33,6 +41,7 @@ class IgvfConfig:
             lab=d.get("lab", cls.lab),
             award=d.get("award", cls.award),
             alias_prefix=d.get("alias_prefix", cls.alias_prefix),
+            enabled_families=tuple(d.get("enabled_families", cls.enabled_families)),
         )
 
 
