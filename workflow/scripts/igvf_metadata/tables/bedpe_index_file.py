@@ -13,6 +13,14 @@ submitted_file_name wasn't given -- inferred as the bedpe prediction
 file's own (still-unresolved) path + ".tbi" via refs.bedpe_prediction_path,
 so this table unblocks automatically alongside Prediction Tabular Files'
 bedpe variant once that naming convention lands.
+
+reference_files removed (2026-07-20 feedback): not a submittable field for
+type IndexFile (content_type=index).
+
+Family-gating (2026-07-20 feedback: only Family=multiome rows, scATAC
+infrastructure stays in place but isn't triggered) needs no code here --
+it's enforced once, centrally, in orchestrator._iter_scopes via
+IgvfConfig.enabled_families, shared by every scope="cluster_model" table.
 """
 
 import os
@@ -44,7 +52,6 @@ def _row(ctx):
     return {
         "file_format": "tbi",
         "content_type": "index",
-        "reference_files": ["IGVFDS0280IQAI"],
         "derived_from": prediction_table.build_alias(ctx, "bedpe"),
         "description": f"index file for thresholded scE2G {family(ctx.model)} predictions BEDPE file",
         "submitted_file_name": _path(ctx),
