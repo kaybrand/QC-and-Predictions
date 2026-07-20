@@ -6,7 +6,7 @@ from . import signal_files  # noqa: F401
 from . import bedpe_index_file  # noqa: F401
 from . import prediction_set  # noqa: F401
 from . import principal_pseudobulk_set  # noqa: F401
-from . import documents  # noqa: F401
+from . import qc_documents  # noqa: F401
 from . import filtered_barcode_list  # noqa: F401
 from . import atac_index_file  # noqa: F401
 from . import filtered_atac_fragment_file  # noqa: F401
