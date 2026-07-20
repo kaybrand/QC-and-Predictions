@@ -2,12 +2,13 @@
 actual portal profile id used for --profile_id), scope cluster_model.
 Exactly one row per (dataset, cluster, model): the ATAC read-depth bigWig.
 
-No model gate here (or anywhere else in this package): which models get
-uploaded is entirely a function of each cluster's `models` list in the
-pipeline config (multiome_powerlaw_v3-only in 2026, a mixture of both once
-scATAC is added in 2027) -- the same iteration this table shares with every
-other cluster_model-scoped table already handles that correctly with zero
-code changes when a cluster's config grows a second model.
+Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
+feedback) needs no code here -- enforced once, centrally, in
+orchestrator._iter_scopes via IgvfConfig.enabled_families, shared by every
+scope="cluster_model" table. A cluster's own `models` list still reflects
+what scE2G actually ran (which may include scATAC even before IGVF is ready
+to receive it); enabled_families is the separate, IGVF-specific gate on top
+of that.
 
 file_set reuses refs.prediction_set_alias -- confirmed formula (2026-07-13).
 
@@ -20,6 +21,11 @@ submitted_file_name does NOT vary by model in the given path
 model-scoped -- fine while only one model is configured per cluster, but
 will collide if a cluster ever has two models' signal files landing at the
 same path. Flagging for when scATAC signal files are added.
+
+reference_files (2026-07-20 feedback): IGVFDS0280IQAI is a curated Set, not
+directly submittable as reference_files -- it contains IGVFFI7969JLFC
+(genome index) and IGVFFI0653VCGH (genome reference) Files, which is what
+reference_files must actually name.
 """
 
 import os
@@ -47,7 +53,7 @@ def _row(ctx):
     return {
         "file_format": "bigWig",
         "content_type": "read-depth signal",
-        "reference_files": ["IGVFDS0280IQAI"],
+        "reference_files": ["IGVFFI7969JLFC", "IGVFFI0653VCGH"],
         "strand_specificity": "unstranded",
         "derived_from": refs.atac_fragment_alias(ctx),
         "submitted_file_name": _path(ctx),
@@ -69,7 +75,6 @@ TABLE = registry.register(
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type"],
         constant_fields={
-            "assembly": "GRCh38",
             "normalized": True,
             "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
         },
