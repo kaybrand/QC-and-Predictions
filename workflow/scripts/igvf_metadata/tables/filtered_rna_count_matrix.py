@@ -31,6 +31,14 @@ sparse-matrix file format name, matching file_format "tar" bundling a
 
 submitted_file_name mirrors Filtered ATAC Fragment Files' own
 multiome_data_cluster_dir convention, with its own filename.
+
+reference_files (2026-07-20 feedback): changed to /reference-files/IGVFFI9573KOZR/
+-- a filtered RNA count matrix pipeline input, not the primary pseudobulk
+set's own MatrixFiles' reference (which was wrong here, same class of
+mistake as Filtered ATAC Fragment Files' reference_files).
+
+controlled_access removed (2026-07-20 feedback): not a submittable field
+for object type MatrixFile.
 """
 
 import os
@@ -62,7 +70,7 @@ def _row(ctx):
     return {
         "file_format": "tar",
         "content_type": "cell by gene matrix",
-        "reference_files": ["/reference-files/IGVFFI9561BASO/"],
+        "reference_files": ["/reference-files/IGVFFI9573KOZR/"],
         "analysis_step_version": refs.qc_guide_to_rna_matrix_analysis_step_version_alias(ctx),
         "derived_from": ",".join(derived_from_parts),
         "description": f"Filtered Matrix Market file containing RNA transcripts for cells annotated as {ctx.cluster}",
@@ -84,8 +92,8 @@ TABLE = registry.register(
         object_type="tabular_file",  # TODO: confirm actual portal profile id
         scope="cluster",
         build_alias=build_alias,
-        required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type", "controlled_access"],
-        constant_fields={"filtered": True, "controlled_access": False, "derived_manually": False},
+        required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type"],
+        constant_fields={"filtered": True, "derived_manually": False},
         scope_fields=_scope_fields,
         variants=[
             registry.VariantSpec(
