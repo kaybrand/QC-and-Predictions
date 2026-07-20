@@ -31,6 +31,16 @@ just a literal constant, no depends_on needed for it.
 
 submitted_file_name mirrors ATAC Index File's own multiome_data_cluster_dir
 convention, minus the ".tbi" suffix.
+
+reference_files (2026-07-20 feedback): IGVFFI0653VCGH/IGVFFI9573KOZR were
+wrong here -- those are the primary pseudobulk set ATAC fragment files' own
+reference_files. This table's reference_files must instead name the file(s)
+the code that GENERATES this data file directly used -- i.e. the
+chrom-sizes file workflow/rules/filter_pseudobulks.smk passes as
+filter_atac_fragments.py's --chrom-sizes
+(reference/IGVF.DACC.GRCh38.chrom.sizes.tsv). Its IGVF accession/alias isn't
+confirmed yet, so _CHROM_SIZES_REFERENCE_FILE below is an explicit
+placeholder pending that.
 """
 
 import os
@@ -39,6 +49,11 @@ from .. import refs, registry
 from ..context import make_alias
 
 TABLE_NAME = "filtered_atac_fragment_file"
+
+# PLACEHOLDER: real IGVF accession/alias for reference/IGVF.DACC.GRCh38.chrom.sizes.tsv
+# (the chrom-sizes file filter_atac_fragments.py's --chrom-sizes flag reads) not
+# confirmed yet -- fill in once known, see module docstring.
+_CHROM_SIZES_REFERENCE_FILE = "PLACEHOLDER_IGVF_alias_for_reference_IGVF.DACC.GRCh38.chrom.sizes.tsv"
 
 
 def build_alias(ctx, variant_name):
@@ -64,7 +79,7 @@ def _row(ctx):
         "file_format_type": "bed3+",
         "content_type": "fragments",
         "file_format_specifications": "/documents/db2a6dd0-cc1d-439e-a610-f9f1d04cfd82/",
-        "reference_files": ["IGVFFI0653VCGH", "IGVFFI9573KOZR"],
+        "reference_files": [_CHROM_SIZES_REFERENCE_FILE],
         "analysis_step_version": refs.qc_guide_to_atac_fragment_analysis_step_version_alias(ctx),
         "derived_from": ",".join(derived_from_parts),
         "description": f"Filtered ATAC fragment file containing reads from cells annotated as {ctx.cluster}",
