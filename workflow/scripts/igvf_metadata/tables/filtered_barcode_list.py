@@ -19,10 +19,16 @@ through refs.py so there's exactly one place to fill in):
   - analysis_step_version: "alias of plotting scripts analysis step
     version, to be created" -- doesn't exist yet (refs.plotting_analysis_step_version_alias).
 
+content_type is "barcode to sample mapping" (2026-07-20 feedback, explicitly
+flagged by the user as subject to change -- was "filtered barcode list").
+
 submitter_comment is genuinely optional/manual (per-cluster free text
 "explaining any additional filtering not described by the QC document") --
 read from cluster_cfg.get("submitter_comment"), omitted when absent since
-it's not in required_columns.
+it's not in required_columns. This already is the config field 2026-07-20
+feedback asked for ("optional submitter comments describing custom filter
+rules not covered by the QC_thresholds document") -- no further change
+needed, a user just sets cluster_cfg["submitter_comment"] per cluster.
 
 documents references the same QC_thresholds Document as Principal
 Pseudobulk Set's own documents field (refs.qc_thresholds_document_alias) --
@@ -43,7 +49,7 @@ def build_alias(ctx, variant_name):
 def _row(ctx):
     return {
         "file_format": "tsv",
-        "content_type": "filtered barcode list",
+        "content_type": "barcode to sample mapping",
         "documents": [refs.qc_thresholds_document_alias(ctx)],
         "file_format_specifications": [make_alias(ctx.igvf, "filtered_barcode_list_format_specification")],
         "derived_from": ",".join(refs.per_cell_quality_report_aliases(ctx)),
@@ -77,7 +83,7 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="",
                 build_row=_row,
-                depends_on=lambda ctx: [("principal_pseudobulk_set", ""), ("documents", "")],
+                depends_on=lambda ctx: [("principal_pseudobulk_set", ""), ("QC_documents", "")],
             ),
         ],
     )
