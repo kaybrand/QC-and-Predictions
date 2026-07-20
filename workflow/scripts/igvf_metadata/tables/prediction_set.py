@@ -9,10 +9,22 @@ longer raises -- but depends_on lists ("principal_pseudobulk_set", "") so
 real uploads still correctly wait for that object to actually exist on the
 portal before this one links to it.
 
-Still open: samples (computed correctly -- unique "subsamples" column
-values from the cluster's local barcode-list file -- but unconfirmed
-whether the portal wants these raw labels directly or references to actual
-Sample objects).
+Resolved 2026-07-20: samples' raw "subsample" column values (e.g.
+"IGVFSM6456LUAO") ARE literal portal Sample accessions already -- on the
+IGVF Data Portal, "Sample" is the In-Vitro-System object type, distinct from
+"biosample" (this pipeline's "cluster") and from this pipeline's own
+"subsample"/in-vitro-system vocabulary. Verifiable directly from the
+accession itself: every IGVF accession is IGVF + a 2-character object-type
+code + an 8-character alphanumeric ID, and "SM" is the Sample type code --
+"IGVFSM6456LUAO" decomposes as IGVF/SM/6456LUAO. No further alias-resolution
+needed; passing the raw values straight through is correct. Ordered by
+descending barcode-count frequency (2026-07-20 feedback: most-contributing
+subsample first), via subsamples.subsamples_by_frequency.
+
+Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
+feedback) needs no code here -- enforced once, centrally, in
+orchestrator._iter_scopes via IgvfConfig.enabled_families, shared by every
+scope="cluster_model" table.
 """
 
 from .. import refs, registry, subsamples
@@ -39,7 +51,7 @@ def _row(ctx):
         "derived_from": ",".join(derived_from_parts),
         "documents": [make_alias(ctx.igvf, "E2G_prediction_set_files")],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
-        "samples": subsamples.unique_subsamples(ctx),  # TODO: raw labels vs Sample-object aliases -- see module docstring
+        "samples": subsamples.subsamples_by_frequency(ctx),  # TODO: raw labels vs Sample-object aliases -- see module docstring
     }
 
 
