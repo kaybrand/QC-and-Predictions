@@ -40,6 +40,22 @@ their path builders raise NotImplementedError and enabled() reports False
 until that naming lands. Once it does: fill in the three path builders and
 they'll pick up the same file-existence-based enabled() that full/thresholded
 already use -- no other change needed.
+
+2026-07-20 update: the RAW scE2G output locations for elements/genes are now
+confirmed -- {cluster_dir}/{model}/scE2G_element_list.tsv.gz and
+{cluster_dir}/{model}/scE2G_gene_list.tsv.gz. That is NOT yet the
+consortium-standard submitted_file_name, though: a reformatting script still
+needs to be built and hooked into this pipeline first, and the user
+explicitly chose to leave _elements_path/_genes_path/_bedpe_path raising
+NotImplementedError until that script exists and emits a real filename,
+rather than enabling these rows against a placeholder path now. Keeping this
+note here so whoever wires in the reformatting script knows where its output
+should land relative to the raw file.
+
+Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
+feedback) needs no code here -- enforced once, centrally, in
+orchestrator._iter_scopes via IgvfConfig.enabled_families, shared by every
+scope="cluster_model" table.
 """
 
 import glob
@@ -204,7 +220,6 @@ def _scope_fields(ctx):
     return {
         "md5sum": None,  # left blank; igvf_utils computes+fills it from submitted_file_name
         "file_set": refs.prediction_set_alias(ctx),  # provisional formula -- see refs.py
-        "cell_type_annotation": None,  # TODO: placeholder pending ANNOTATIONS_WITH_CL reference table
     }
 
 
@@ -238,7 +253,6 @@ TABLE = registry.register(
         required_columns=["aliases", "award", "lab", "content_type", "controlled_access", "file_format", "file_set"],
         constant_fields={
             "controlled_access": False,
-            "assembly": "GRCh38",
             "filtered": True,
             "derived_manually": False,
             "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
