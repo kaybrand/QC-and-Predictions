@@ -4,15 +4,12 @@ model: aliases/file_set/derived_from/submitted_file_name all have no
 {Family}/model component, since the ATAC fragment file (and its index) is
 shared across both Multiome and scATAC predictions for a cluster.
 
-OPEN ISSUE (2026-07-16, unconfirmed): the given `description` template --
-"ATAC fragment file index used as input for scE2G_{Family} predictions..."
--- references {Family}, but this table has no per-model context (ctx.model
-is None here, same as Principal Pseudobulk Set/Filtered Barcode
-Lists/Documents). Calling family(ctx.model) would raise (family() has no
-mapping for None). Implemented as listing every family actually configured
-for this cluster (from cluster_cfg["models"]), e.g. "scE2G Multiome, scE2G
-scATAC predictions for..." when both are configured -- confirm this is the
-intended wording, since the original text implies exactly one family.
+Resolved 2026-07-20: description is family-agnostic --
+"ATAC fragment file index used as input for E2G predictions for {dataset}
+{cluster} cells" -- no {Family}/model wording at all, since principal
+pseudobulks now feed many E2G models, not just scE2G. This also matches
+ctx.model being None here (same as Principal Pseudobulk Set/Filtered Barcode
+Lists/QC Documents).
 
 submitted_file_name mirrors workflow/rules/common.smk's own
 multiome_data_dir(dataset)/cluster convention (see context.py's
@@ -22,13 +19,15 @@ atac_fragments_{dataset}_{cluster}.tsv.gz from.
 
 analysis_step_version is a true stub (refs.qc_guide_to_atac_fragment_analysis_step_version_alias)
 -- "to be created," no alias given yet.
+
+reference_files removed (2026-07-20 feedback): not a submittable field for
+type IndexFile (content_type=index).
 """
 
 import os
 
 from .. import refs, registry
 from ..context import make_alias
-from .prediction_tabular_files import family
 
 TABLE_NAME = "atac_index_file"
 
@@ -45,25 +44,14 @@ def _enabled(ctx):
     return os.path.exists(_path(ctx))
 
 
-def _family_list_text(ctx):
-    families = []
-    for model in ctx.cluster_cfg["models"]:
-        fam = family(model)
-        if fam not in families:
-            families.append(fam)
-    return ", ".join(f"scE2G {f}" for f in families)
-
-
 def _row(ctx):
     return {
         "file_format": "tbi",
         "content_type": "index",
-        "reference_files": ["IGVFFI0653VCGH", "IGVFFI9573KOZR"],
         "analysis_step_version": refs.qc_guide_to_atac_fragment_analysis_step_version_alias(ctx),
         "derived_from": refs.atac_fragment_alias(ctx),
         "description": (
-            f"ATAC fragment file index used as input for {_family_list_text(ctx)} predictions "
-            f"for {ctx.dataset} {ctx.cluster} cells"
+            f"ATAC fragment file index used as input for E2G predictions for {ctx.dataset} {ctx.cluster} cells"
         ),
         "submitted_file_name": _path(ctx),
     }
