@@ -18,12 +18,25 @@ response on) -- see refs.primary_pseudobulk_metadata, a stub.
 
 samples: the given spec says "extract from primary pseudobulk sets or
 filtered QC TabularFiles" -- read as two alternative sources, not two
-combined ones. For now reuses the same local subsamples.unique_subsamples
-list that both this field and input_file_sets need anyway (and that
-Prediction Set's own `samples` field already uses) rather than round-
-tripping through the live portal query for the same information -- flag if
-that's wrong and it should instead come from the primary pseudobulk sets'
-own `samples` field via the multireport lookup.
+combined ones. For now reuses the same local subsamples module that both
+this field and input_file_sets need anyway (and that Prediction Set's own
+`samples` field already uses) rather than round-tripping through the live
+portal query for the same information -- flag if that's wrong and it should
+instead come from the primary pseudobulk sets' own `samples` field via the
+multireport lookup. Ordered by descending barcode-count frequency
+(2026-07-20 feedback: most-contributing subsample first), via
+subsamples.subsamples_by_frequency -- same as Prediction Set's `samples`.
+input_file_sets keeps subsamples.unique_subsamples' own order (not asked to
+change).
+
+Resolved 2026-07-20 (see prediction_set.py's docstring for the full
+explanation): the raw "subsample" values this reuses (e.g. "IGVFSM6456LUAO")
+ARE literal portal Sample (In-Vitro-System) accessions already -- the "SM"
+right after "IGVF" is the object-type code, confirming this directly, no
+further alias-resolution needed for the `samples` field.
+
+controlled_access removed from constant_fields (2026-07-20 feedback): not a
+submittable field for object type PseudobulkSet.
 
 documents references a "QC_thresholds" Document per (dataset, cluster) --
 not yet a registered table (no "Documents" module built), so, like
@@ -55,7 +68,7 @@ def _row(ctx):
         "cell_type": f"/sample-terms/{metadata['cl_id']}/",
         "cell_qualifier": metadata["cell_qualifier"],
         "documents": [refs.qc_thresholds_document_alias(ctx)],  # the QC_thresholds Document (not yet built)
-        "samples": subsamples.unique_subsamples(ctx),
+        "samples": subsamples.subsamples_by_frequency(ctx),
         "input_file_sets": _primary_pseudobulk_aliases(ctx),
         "description": (
             f"Filtered datafiles describing a single annotated cell cluster ({ctx.cluster}); "
@@ -71,13 +84,13 @@ TABLE = registry.register(
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_set_type"],
-        constant_fields={"file_set_type": "pseudobulk analysis", "merged": True, "controlled_access": False},
+        constant_fields={"file_set_type": "pseudobulk analysis", "merged": True},
         variants=[
             # name="" to match every dependent table's depends_on=[("principal_pseudobulk_set", "")]
             registry.VariantSpec(
                 name="",
                 build_row=_row,
-                depends_on=lambda ctx: [("documents", "")],
+                depends_on=lambda ctx: [("QC_documents", "")],
             ),
         ],
     )
