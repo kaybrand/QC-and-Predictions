@@ -23,6 +23,11 @@ Confirmed by reading that script and igvf_utils/connection.py directly
     one file can abort the remaining rows in that file. Callers of
     invoke_register in "upload" mode should re-verify each intended row via
     get_by_alias afterward rather than trusting the subprocess's exit code.
+
+get_multireport() is the one other read path here (2026-07-21): a raw GET
+against /multireport/ for cell_metadata.py's PseudobulkSet lookup --
+Connection.search() can't be reused for this, it hardcodes "search/" as
+the path.
 """
 
 import csv
@@ -61,6 +66,27 @@ class PortalReader:
     def get_by_alias(self, alias: str):
         """Returns the portal record dict, or None if it doesn't exist yet."""
         return self._connection().get(alias, ignore404=True) or None
+
+    def get_multireport(self, query_string: str):
+        """One raw GET against the /multireport/ endpoint -- e.g. cell_metadata.py's
+        PseudobulkSet lookup. Not reusable via Connection.search(): that method
+        hardcodes its URL to "search/?..." via make_search_url() and can't be
+        pointed at a different report path. Mirrors search()'s own request shape
+        (auth/timeout/headers), but does NOT copy its verify=False -- that
+        library-internal TLS-verification skip is the vendored code's own
+        choice, not something to reintroduce here without asking. If a real
+        run against data.igvf.org hits a cert-verification error, surface it
+        rather than silently disabling verification.
+        Returns the parsed "@graph" list, same shape search() returns."""
+        import requests
+        import igvf_utils as iu
+        import igvf_utils.utils as iuu
+
+        conn = self._connection()
+        url = iuu.url_join([conn.igvf_mode.url, "multireport/?"]) + query_string
+        response = requests.get(url, auth=conn.auth, timeout=iu.TIMEOUT, headers=iuu.REQUEST_HEADERS_JSON)
+        response.raise_for_status()
+        return response.json()["@graph"]
 
 
 def _tsv_cell(value):

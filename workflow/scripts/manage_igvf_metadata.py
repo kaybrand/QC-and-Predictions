@@ -75,9 +75,21 @@ def main():
     for dataset, cluster in cluster_keys:
         cluster_configs[(dataset, cluster)] = config["clusters"][dataset][cluster]
 
+    # Every (dataset, cluster) in the whole pipeline config, NOT just this invocation's
+    # --cluster-keys -- the cell_metadata cache (built from one wholesale multireport GET
+    # covering every primary pseudobulk on the portal) must cover every cluster we know
+    # about, or a later invocation for a different --cluster-keys subset, within the same
+    # 24h TTL, finds nothing cached for its own clusters and can do nothing about it.
+    all_cluster_configs = {
+        (dataset, cluster): cfg
+        for dataset, clusters in config["clusters"].items()
+        for cluster, cfg in clusters.items()
+    }
+
     run_kwargs = dict(
         cluster_keys=cluster_keys,
         cluster_configs=cluster_configs,
+        all_cluster_configs=all_cluster_configs,
         igvf_cfg=igvf_cfg,
         scE2G_dir=config["scE2G_dir"],
         state_db_path=args.state_db,

@@ -27,13 +27,14 @@ principal_pseudobulk_set_alias() references a table not built yet
 registered, which depends_on prevents" situation as prediction_set_alias
 above.
 
-primary_pseudobulk_metadata() is a true stub: cell_type/cell_qualifier on
-Principal Pseudobulk Set need a live GET against data.igvf.org's
-PseudobulkSet multireport endpoint, "indexed to the rows we need" -- but
-which field to index/match on (aliases? cell_annotation? something else?)
-hasn't been answered yet. Fill in here once it is; this is also where
-request caching should live (one multireport fetch per run, not per
-cluster).
+primary_pseudobulk_metadata() is resolved (2026-07-21): delegates to
+cell_metadata.get_metadata_for, which reads a 24h-TTL cache of one
+PseudobulkSet-multireport GET per pipeline trigger (populated by
+cell_metadata.refresh_if_stale, called once at the top of
+orchestrator.run() -- one fetch per run, not per cluster, as originally
+planned here). See cell_metadata.py's module docstring for the full
+matching mechanism (join by `samples` identity against local subsample
+sets, not alias parsing).
 
 qc_thresholds_document_alias() is confirmed and deterministic (used by
 both Principal Pseudobulk Set's and Filtered Barcode Lists' `documents`) --
@@ -96,15 +97,11 @@ def principal_pseudobulk_set_alias(ctx):
 
 
 def primary_pseudobulk_metadata(ctx):
-    """Should return {"cl_id": ..., "cell_qualifier": ...} looked up from
-    data.igvf.org's PseudobulkSet multireport, matched to this (dataset,
-    cluster)'s primary pseudobulk sets. Raises until the indexing/matching
-    key is confirmed -- see this module's docstring."""
-    raise NotImplementedError(
-        "cell_type/cell_qualifier need a live PseudobulkSet multireport lookup, indexed "
-        "on a key that hasn't been confirmed yet (aliases? cell_annotation? something "
-        "else?) -- fill in here once it is."
-    )
+    """Returns {"cl_id": ..., "cell_qualifier": ...} from the cell_metadata
+    cache -- see this module's docstring and cell_metadata.py."""
+    from . import cell_metadata
+
+    return cell_metadata.get_metadata_for(ctx)
 
 
 def qc_thresholds_document_alias(ctx):

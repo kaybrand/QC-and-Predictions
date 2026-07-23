@@ -1,0 +1,352 @@
+"""Cell Annotation / Cell Type metadata for Principal Pseudobulk Sets and the
+(separately being built) reformatted E2G prediction tabular files -- both
+need the same lookup, resolved from one live GET against data.igvf.org's
+PseudobulkSet multireport (portal_client.PortalReader.get_multireport),
+cached in state.db's cell_annotations table on a 24h TTL so a multi-cluster
+run only ever issues the GET once, not once per cluster.
+
+Grouping IS alias-based (reversed 2026-07-22, see below) -- a subsample
+(an In-Vitro-System, MULTI-seq-tagged) is NOT a unique key for a pseudobulk:
+the final cell-type/cluster annotation is made by downstream human analysis,
+so one subsample routinely has MANY distinct primary pseudobulks, one per
+resulting cluster (confirmed against real production data: IGVFSM8373MXSW
+alone has 18 distinct primary pseudobulks, one per pancreatic differentiation
+cluster). The real unique key is (subsample, cluster); today the alias
+("{lab}:{dataset}-{cluster}-{subsample}") is the only field that encodes
+which cluster a pseudobulk represents, so joining on it (matching the suffix
+after the first ":", not assuming a specific lab prefix) is the only correct
+mechanism for the ~500 primaries that follow it. The several-thousand
+primaries coming soon are unlikely to follow this exact string format (a
+separate, ongoing effort is on a calculable-alias mechanism for those) --
+until that lands, primaries whose alias doesn't match any local
+(dataset, cluster, subsample) candidate just don't join, logged, not fatal.
+
+An EARLIER version of this module deliberately avoided alias parsing,
+reasoning that a {subsample: (dataset, cluster)} reverse index built from
+local subsample sets alone would be more robust. That reverse index is
+WRONG: it assumed subsample uniquely identifies a pseudobulk, which the
+multiplexed-cluster finding above disproves -- it would have silently kept
+only the last-seen pseudobulk per subsample among the many that share it.
+
+"Exactly 1 contributing sample" is not a data-quality heuristic -- it's the
+actual filter for pipeline membership (distinguishes unified-processing
+primaries, which QC-and-Predictions is part of, from every other
+PseudobulkSet on the portal). One known uniformly-processed dataset doesn't
+follow this yet -- a data-side fix, out of scope here.
+
+A group's Cell Annotation is "locked" (shareable) if EITHER every
+contributing primary's status == "released", OR some *principal*
+pseudobulk row in the same multireport response already carries this exact
+cell_annotation value (the portal auto-populates that field on a principal
+upload) -- no local upload-ledger lookup needed for that second condition.
+
+Every anomaly here (an inconsistent triple within a group, a local
+subsample missing from its portal group) is logged and skips just that one
+(dataset, cluster) scope, never the whole refresh -- same
+try/except-and-log-and-continue discipline orchestrator.plan_table already
+uses for enabled() failures. A skipped scope simply leaves its cache row
+stale/absent; get_metadata_for raises for it, same as any other
+still-unresolved stub in this package.
+
+2026-07-22 correction: EVERY primary/principal-pseudobulk row the
+multireport GET returns is saved unconditionally, to
+state.cell_metadata_primary_pseudobulks/cell_metadata_principal_pseudobulks
+-- NOT gated on whether it happens to match a currently-configured local
+cluster, or whether that cluster's whole group validates. The earlier
+version only ever persisted the derived per-(dataset, cluster) view
+(cell_annotations), so any primary pseudobulk not part of a fully-valid
+local group was fetched into memory and then silently discarded --
+defeating the entire point of a cache meant to hold what the portal
+actually has. cell_annotations remains a stricter, derived, per-cluster
+view (still useful for Principal Pseudobulk Set's consistency-checked
+cell_type/cell_qualifier), built FROM the raw tables, not instead of them.
+"""
+
+import csv
+import os
+import sys
+from datetime import datetime, timezone
+
+from . import state, subsamples
+from .context import Context
+
+CACHE_TTL_HOURS = 24
+SYNAPSE_PARENT_ID = "syn53469844"  # E2G Pillar Project's Synapse collaborative space
+SHAREABLE_TSV_NAME = "cell_annotation_table.tsv"
+
+# Confirmed against a real production call (2026-07-22): input_file_sets/samples/cell_type
+# all come back as fully-embedded objects regardless of which sub-fields are requested here
+# (no "@type" sub-field ever appears on input_file_sets entries -- classification instead
+# uses their "@id" path prefix, see _classify). limit=all is required: the multireport
+# endpoint otherwise silently caps at a default page size (25, confirmed) instead of
+# returning every PseudobulkSet.
+_MULTIREPORT_QUERY = (
+    "type=PseudobulkSet&status%21=deleted&limit=all"
+    "&field=%40id&field=cell_annotation&field=aliases&field=cell_type"
+    "&field=summary&field=cell_qualifier&field=input_file_sets"
+    "&field=lab&field=samples&field=status"
+)
+
+_SHAREABLE_COLUMNS = [
+    "dataset",
+    "cluster",
+    "cell_annotation",
+    "cl_id",
+    "cell_qualifier",
+    "all_primary_released",
+    "principal_uploaded",
+    "principal_alias",
+]
+
+
+def log(msg):
+    print(f"[cell_metadata] {msg}", file=sys.stderr)
+
+
+def _now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _is_stale(last_fetch):
+    """last_fetch: state.latest_cell_annotation_fetch(conn)'s return value
+    (None if the cache has never been populated)."""
+    if not last_fetch:
+        return True
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(last_fetch)
+    return age.total_seconds() > CACHE_TTL_HOURS * 3600
+
+
+def _classify(row):
+    """"primary" (input_file_sets all AnalysisSets), "principal" (all
+    PseudobulkSets), or None (ambiguous/unparseable -- caller skips it).
+    input_file_sets entries never carry an "@type" sub-field, confirmed
+    against a real production call (2026-07-22) -- classify by "@id" path
+    prefix instead ("/analysis-sets/..." vs "/pseudobulk-sets/...")."""
+    ids = [entry.get("@id", "") for entry in row.get("input_file_sets") or [] if isinstance(entry, dict)]
+    if not ids:
+        return None
+    if all(i.startswith("/analysis-sets/") for i in ids):
+        return "primary"
+    if all(i.startswith("/pseudobulk-sets/") for i in ids):
+        return "principal"
+    return None
+
+
+def _cl_id_from_cell_type(cell_type):
+    """cell_type comes back from the portal as a fully-embedded SampleTerm
+    object (confirmed against a real production call, 2026-07-22), e.g.
+    {"term_name": "macrophage", "term_id": "CL:0000235",
+    "@id": "/sample-terms/CL_0000235/", ...} -- NOT a bare reference path/string.
+    Uses "@id" (portal-style "CL_0000235", underscore) rather than "term_id"
+    ("CL:0000235", colon/CURIE-style): principal_pseudobulk_set.py's _row()
+    re-wraps this as f"/sample-terms/{cl_id}/", which only round-trips
+    correctly with the "@id" form. If the E2G reformatted tabular files'
+    "CL Term ID" column specifically wants the colon/CURIE form instead,
+    that's cell_type["term_id"] on the raw cached row -- flag if so."""
+    if not isinstance(cell_type, dict):
+        return None
+    ref = cell_type.get("@id") or ""
+    return ref.strip("/").rsplit("/", 1)[-1] or None
+
+
+def _local_subsamples(cluster_keys, cluster_configs):
+    """{(dataset, cluster): set(local subsample ids)} -- one entry per local scope."""
+    by_scope = {}
+    for dataset, cluster in cluster_keys:
+        ctx = Context(dataset, cluster, None, cluster_configs[(dataset, cluster)], None, None)
+        by_scope[(dataset, cluster)] = set(subsamples.unique_subsamples(ctx))
+    return by_scope
+
+
+def _alias_suffix(alias):
+    """The part after the first ":" -- "{dataset}-{cluster}-{subsample}" for
+    the ~500 primaries that follow that convention, whatever it is for
+    primaries that don't (in which case it simply won't match any local
+    candidate suffix built the same way, below)."""
+    return alias.split(":", 1)[-1] if alias and ":" in alias else alias
+
+
+def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
+    """One multireport GET per stale cache, shared across every (dataset,
+    cluster) in this run -- not one GET per cluster. Callers invoked once
+    per cluster (e.g. the pipeline-integrated hook, one cluster at a time --
+    see orchestrator.py's own module docstring) still only hit the network
+    once per 24h, as long as they share the same --state-db: the 2nd/3rd/...
+    invocation's staleness check finds the 1st invocation's fetch still
+    fresh and returns here without ever calling reader.get_multireport."""
+    last_fetch = state.latest_cell_annotation_fetch(conn)
+    if not _is_stale(last_fetch):
+        log(f"cell_annotations cache still fresh (last fetched {last_fetch}) -- skipping multireport GET")
+        return
+    log(f"cell_annotations cache {'empty' if not last_fetch else 'stale'} -- issuing multireport GET")
+
+    rows = reader.get_multireport(_MULTIREPORT_QUERY)
+    now = _now()
+    # Recorded unconditionally, before any per-scope validation below: the TTL is about
+    # "did we hit the network recently," not "did every scope's data validate cleanly."
+    # A round where every scope fails local-subset-of-portal validation must still count
+    # as fetched, or the next invocation re-GETs immediately instead of waiting out the TTL.
+    state.record_cell_annotations_fetch(conn, now)
+    local_by_scope = _local_subsamples(cluster_keys, cluster_configs)
+
+    principal_by_annotation = {}
+    primary_by_alias_suffix = {}  # "{dataset}-{cluster}-{subsample}" -> its portal row
+    saved_primary_count = 0
+    skipped_no_alias = 0
+    for row in rows:
+        kind = _classify(row)
+        if kind == "principal":
+            annotation = row.get("cell_annotation")
+            aliases = row.get("aliases") or []
+            alias = aliases[0] if aliases else None
+            if annotation and alias:
+                principal_by_annotation[annotation] = alias
+                # Saved unconditionally -- this is the "already locked in" evidence,
+                # independent of whether any local cluster currently references it.
+                state.upsert_principal_pseudobulk(conn, alias, annotation, now)
+            continue
+        if kind != "primary":
+            continue
+        # samples entries are fully-embedded Sample/In-Vitro-System objects (confirmed
+        # against a real production call, 2026-07-22), not bare accession strings.
+        sample_accessions = [s.get("accession") for s in row.get("samples") or [] if isinstance(s, dict)]
+        if len(sample_accessions) != 1:
+            continue  # not part of the unified-processing pipeline this run
+        subsample = sample_accessions[0]
+        aliases = row.get("aliases") or []
+        alias = aliases[0] if aliases else None
+        if not alias:
+            skipped_no_alias += 1
+            continue  # can't identify this pseudobulk uniquely without an alias -- see module docstring
+        # Saved unconditionally, keyed by alias, for EVERY primary pseudobulk the portal
+        # returned -- not gated on whether it matches a currently-configured local
+        # cluster. This is the actual point of the cache: a downstream consumer (e.g.
+        # the E2G tabular file reformatting step) can look up a pseudobulk's raw Cell
+        # Annotation/CL Term ID/Cell Qualifier here directly.
+        state.upsert_primary_pseudobulk(
+            conn,
+            alias,
+            subsample,
+            row.get("cell_annotation"),
+            _cl_id_from_cell_type(row.get("cell_type")),
+            row.get("cell_qualifier"),
+            row.get("status"),
+            now,
+        )
+        saved_primary_count += 1
+        primary_by_alias_suffix[_alias_suffix(alias)] = row
+
+    log(
+        f"saved {saved_primary_count} primary pseudobulk row(s) ({skipped_no_alias} skipped for lacking an alias) "
+        f"and {len(principal_by_annotation)} principal pseudobulk row(s) to the raw cache"
+    )
+
+    matched_suffixes = set()
+    for (dataset, cluster), local_subsamples_set in local_by_scope.items():
+        # (subsample, cluster) -- not subsample alone -- is the real unique key (2026-07-22
+        # finding: one MULTI-seq-tagged subsample routinely has many distinct pseudobulks,
+        # one per downstream-annotated cluster). The alias is the only field that currently
+        # encodes cluster identity, so match candidate suffixes built from OUR OWN known
+        # (dataset, cluster, subsample) triples against it, rather than parsing the alias's
+        # ambiguous hyphen-separated segments blind.
+        candidate_suffixes = {f"{dataset}-{cluster}-{s}": s for s in local_subsamples_set}
+        matched_suffixes |= set(candidate_suffixes)
+        missing_locally = [s for suffix, s in candidate_suffixes.items() if suffix not in primary_by_alias_suffix]
+        if missing_locally:
+            log(
+                f"{dataset}/{cluster}: local subsample(s) {sorted(missing_locally)} have no corresponding "
+                f"primary pseudobulk alias matching \"{{lab}}:{dataset}-{{cluster}}-{{subsample}}\" on the "
+                f"portal -- skipping this scope's cache until resolved (expected for primaries uploaded "
+                f"under a different alias convention -- see module docstring)"
+            )
+            continue
+        scope_rows = [primary_by_alias_suffix[suffix] for suffix in candidate_suffixes]
+
+        # cell_type is an unhashable dict -- reduce to the bare cl_id string (already
+        # extracted once per row into the raw cache above) before using it in a set.
+        triples = {
+            (r.get("cell_annotation"), _cl_id_from_cell_type(r.get("cell_type")), r.get("cell_qualifier"))
+            for r in scope_rows
+        }
+        if len(triples) != 1:
+            log(
+                f"{dataset}/{cluster}: {len(triples)} distinct Cell Annotation/Cell Type/Cell Qualifier "
+                f"triples across its primary pseudobulks (expected exactly 1) -- skipping this scope's cache"
+            )
+            continue
+        cell_annotation, cl_id, cell_qualifier = next(iter(triples))
+
+        all_primary_released = all(r.get("status") == "released" for r in scope_rows)
+        principal_alias = principal_by_annotation.get(cell_annotation)
+
+        state.upsert_cell_annotation(
+            conn,
+            dataset,
+            cluster,
+            cell_annotation,
+            cl_id,
+            cell_qualifier,
+            ",".join(sorted(local_subsamples_set)),
+            all_primary_released,
+            principal_alias is not None,
+            principal_alias,
+            now,
+        )
+
+    unmatched = set(primary_by_alias_suffix) - matched_suffixes
+    if unmatched:
+        log(
+            f"{len(unmatched)} portal primary pseudobulk(s) whose alias didn't match any local "
+            f"(dataset, cluster, subsample) candidate this run (still saved to the raw cache above -- "
+            f"just not part of any currently-configured local cluster's derived group)"
+        )
+
+
+def get_metadata_for(ctx):
+    """Should return {"cl_id": ..., "cell_qualifier": ...} for
+    (ctx.dataset, ctx.cluster) -- raises if that scope's cache row is
+    missing (never successfully cached yet -- see refresh_if_stale's
+    per-scope skip conditions above)."""
+    row = state.get_cell_annotation(ctx.conn, ctx.dataset, ctx.cluster)
+    if row is None:
+        raise ValueError(
+            f"{ctx.dataset}/{ctx.cluster}: no cached Cell Annotation metadata -- either the multireport "
+            "cache hasn't been refreshed yet, or this scope failed its consistency/subset validation "
+            "(see cell_metadata.refresh_if_stale logs)"
+        )
+    return {"cl_id": row["cl_id"], "cell_qualifier": row["cell_qualifier"]}
+
+
+def build_shareable_rows(conn):
+    """Only rows that won't change further: every contributing primary
+    already released, or a principal pseudobulk already uploaded using this
+    exact Cell Annotation."""
+    return [r for r in state.all_cell_annotations(conn) if r["all_primary_released"] or r["principal_uploaded"]]
+
+
+def _write_shareable_tsv(rows, path):
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f, delimiter="\t")
+        writer.writerow(_SHAREABLE_COLUMNS)
+        for row in rows:
+            writer.writerow([row.get(c, "") for c in _SHAREABLE_COLUMNS])
+    return path
+
+
+def push_to_synapse(rows, manifest_dir=None):
+    """Writes the shareable-rows TSV and stores it as a child of
+    SYNAPSE_PARENT_ID -- synapseclient auto-versions a repeated store() to
+    the same (name, parent) File, so "keep it updated" needs no extra
+    bookkeeping here."""
+    if not rows:
+        return None
+    import synapseclient
+
+    path = os.path.join(manifest_dir or ".", SHAREABLE_TSV_NAME)
+    _write_shareable_tsv(rows, path)
+    syn = synapseclient.login()
+    entity = synapseclient.File(path, parent=SYNAPSE_PARENT_ID, name=SHAREABLE_TSV_NAME)
+    return syn.store(entity)

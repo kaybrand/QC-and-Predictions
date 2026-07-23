@@ -26,13 +26,24 @@ Row ordering across tables/variants falls out of just re-running: a row
 deferred on a dependency is picked up automatically next time run() is
 called, whether that's the pipeline hook firing for a later cluster or the
 scanner's periodic reconciliation.
+
+cell_metadata.refresh_if_stale() (2026-07-21) runs once at the top, before
+any table -- a single PseudobulkSet-multireport GET (24h TTL) that
+Principal Pseudobulk Set's payload-building depends on. Grouped/cached
+against EVERY cluster in the pipeline config (all_cluster_configs), not just
+this invocation's cluster_keys -- otherwise a later invocation for a
+different cluster subset, within the same TTL window, would find nothing
+cached for its own clusters. On a real upload pass (mode="upload"),
+cell_metadata.push_to_synapse() runs once at the end, re-publishing the
+"locked" subset of that cache to the shared Synapse
+space -- see cell_metadata.py for both.
 """
 
 import os
 import sys
 from datetime import datetime, timezone
 
-from . import portal_client, registry, state
+from . import cell_metadata, portal_client, registry, state
 from .context import Context
 
 
@@ -100,7 +111,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
         counts[key] = counts.get(key, 0) + 1
 
     for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
-        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir)
+        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, conn=conn)
         model_key = model or ""
         for variant in table.variants:
             # enabled() can do real I/O (e.g. prediction_tabular_files' score-threshold
@@ -185,6 +196,7 @@ def run(
     excluded=None,
     igvf_mode=None,
     iu_register_path=portal_client.IU_REGISTER_DEFAULT_PATH,
+    all_cluster_configs=None,
 ):
     """mode:
       "preview"  (default) -- plan + write TSVs only. No call to
@@ -195,6 +207,15 @@ def run(
       "upload"   -- runs iu_register.py for real, then re-verifies and
                  records outcomes. Only reachable when the caller explicitly
                  asks for it -- see manage_igvf_metadata.py's --mode flag.
+
+    all_cluster_configs: every (dataset, cluster) the pipeline knows about
+    (all datasets in the pipeline config, not just this invocation's
+    cluster_keys) -- defaults to cluster_configs for callers (e.g. the test
+    harness) that only ever know about one scope anyway. Passed to
+    cell_metadata.refresh_if_stale so the wholesale multireport GET's data
+    gets grouped/validated/cached for every cluster we know about, not
+    discarded for every cluster except whichever narrow subset this one
+    invocation happens to be uploading -- see cell_metadata.py.
     """
     if mode not in ("preview", "validate", "upload"):
         raise ValueError(f"mode must be one of preview/validate/upload, got {mode!r}")
@@ -204,6 +225,15 @@ def run(
     now = _now()
     for dataset, cluster in excluded or []:
         state.mark_excluded(conn, dataset, cluster, "resolve_exclusions.py", now)
+
+    # One multireport GET per stale (24h TTL) cache, covering every cluster we know
+    # about -- not just this run's cluster_keys, so a later invocation for a
+    # different subset can still be served from cache within the same TTL window.
+    # Populates Principal Pseudobulk Set's cell_type/cell_qualifier before that
+    # table's payload gets built below.
+    cell_metadata.refresh_if_stale(
+        conn, reader, set(all_cluster_configs or cluster_configs), all_cluster_configs or cluster_configs
+    )
 
     tables = [t for t in registry.all_specs() if table_names is None or t.name in table_names]
     report = {}
@@ -245,6 +275,13 @@ def run(
             table_report["iu_register_results"] = iu_results
 
         report[table.name] = table_report
+
+    if mode == "upload":
+        # Re-derive and re-push the shareable Cell Annotation table whenever a real
+        # upload pass runs -- cheap and idempotent (Synapse auto-versions a repeated
+        # store() to the same File), simpler than tracking whether principal_pseudobulk_set
+        # rows specifically changed this run.
+        cell_metadata.push_to_synapse(cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir)
 
     conn.close()
     return report

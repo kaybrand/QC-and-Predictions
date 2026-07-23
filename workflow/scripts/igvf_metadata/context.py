@@ -54,6 +54,7 @@ class Context:
     igvf: IgvfConfig
     scE2G_dir: str
     cache: dict = field(default_factory=dict)  # per-run memoization (e.g. score thresholds, one lookup per model)
+    conn: Optional[object] = None  # state.db connection -- cell_metadata.get_metadata_for's cache lookup needs it
 
     @property
     def results_dir(self):
@@ -70,7 +71,9 @@ class Context:
         return os.path.join(WDIR, "multiome_data", self.dataset, self.cluster)
 
     def with_model(self, model):
-        return Context(self.dataset, self.cluster, model, self.cluster_cfg, self.igvf, self.scE2G_dir, self.cache)
+        return Context(
+            self.dataset, self.cluster, model, self.cluster_cfg, self.igvf, self.scE2G_dir, self.cache, self.conn
+        )
 
 
 def make_alias(igvf: IgvfConfig, *parts) -> str:
