@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS cell_annotations (
     cluster TEXT NOT NULL,
     cell_annotation TEXT NOT NULL,
     cl_id TEXT NOT NULL,
+    term_id TEXT NOT NULL,
+    term_name TEXT NOT NULL,
     cell_qualifier TEXT,
     portal_samples TEXT NOT NULL,
     all_primary_released INTEGER NOT NULL,
@@ -101,6 +103,8 @@ CREATE TABLE IF NOT EXISTS cell_metadata_primary_pseudobulks (
     subsample TEXT,
     cell_annotation TEXT,
     cl_id TEXT,
+    term_id TEXT,
+    term_name TEXT,
     cell_qualifier TEXT,
     status TEXT,
     fetched_at TEXT NOT NULL
@@ -226,6 +230,8 @@ def upsert_cell_annotation(
     cluster,
     cell_annotation,
     cl_id,
+    term_id,
+    term_name,
     cell_qualifier,
     portal_samples,
     all_primary_released,
@@ -236,12 +242,14 @@ def upsert_cell_annotation(
     with transaction(conn):
         conn.execute(
             """INSERT INTO cell_annotations
-               (dataset, cluster, cell_annotation, cl_id, cell_qualifier, portal_samples,
+               (dataset, cluster, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_samples,
                 all_primary_released, principal_uploaded, principal_alias, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(dataset, cluster) DO UPDATE SET
                    cell_annotation=excluded.cell_annotation,
                    cl_id=excluded.cl_id,
+                   term_id=excluded.term_id,
+                   term_name=excluded.term_name,
                    cell_qualifier=excluded.cell_qualifier,
                    portal_samples=excluded.portal_samples,
                    all_primary_released=excluded.all_primary_released,
@@ -253,6 +261,8 @@ def upsert_cell_annotation(
                 cluster,
                 cell_annotation,
                 cl_id,
+                term_id,
+                term_name,
                 cell_qualifier,
                 portal_samples,
                 int(all_primary_released),
@@ -263,20 +273,24 @@ def upsert_cell_annotation(
         )
 
 
-def upsert_primary_pseudobulk(conn, alias, subsample, cell_annotation, cl_id, cell_qualifier, status, now):
+def upsert_primary_pseudobulk(
+    conn, alias, subsample, cell_annotation, cl_id, term_id, term_name, cell_qualifier, status, now
+):
     with transaction(conn):
         conn.execute(
             """INSERT INTO cell_metadata_primary_pseudobulks
-               (alias, subsample, cell_annotation, cl_id, cell_qualifier, status, fetched_at)
-               VALUES (?,?,?,?,?,?,?)
+               (alias, subsample, cell_annotation, cl_id, term_id, term_name, cell_qualifier, status, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?)
                ON CONFLICT(alias) DO UPDATE SET
                    subsample=excluded.subsample,
                    cell_annotation=excluded.cell_annotation,
                    cl_id=excluded.cl_id,
+                   term_id=excluded.term_id,
+                   term_name=excluded.term_name,
                    cell_qualifier=excluded.cell_qualifier,
                    status=excluded.status,
                    fetched_at=excluded.fetched_at""",
-            (alias, subsample, cell_annotation, cl_id, cell_qualifier, status, now),
+            (alias, subsample, cell_annotation, cl_id, term_id, term_name, cell_qualifier, status, now),
         )
 
 

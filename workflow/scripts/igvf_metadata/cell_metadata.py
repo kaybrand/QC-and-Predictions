@@ -83,8 +83,8 @@ SHAREABLE_TSV_NAME = "cell_annotation_table.tsv"
 _MULTIREPORT_QUERY = (
     "type=PseudobulkSet&status%21=deleted&limit=all"
     "&field=%40id&field=cell_annotation&field=aliases&field=cell_type"
-    "&field=summary&field=cell_qualifier&field=input_file_sets"
-    "&field=lab&field=samples&field=status"
+    "&field=cell_type.term_name&field=cell_type.term_id&field=summary&field=cell_qualifier"
+    "&field=input_file_sets&field=lab&field=samples&field=status"
 )
 
 _SHAREABLE_COLUMNS = [
@@ -92,6 +92,8 @@ _SHAREABLE_COLUMNS = [
     "cluster",
     "cell_annotation",
     "cl_id",
+    "term_id",
+    "term_name",
     "cell_qualifier",
     "all_primary_released",
     "principal_uploaded",
@@ -147,6 +149,27 @@ def _cl_id_from_cell_type(cell_type):
         return None
     ref = cell_type.get("@id") or ""
     return ref.strip("/").rsplit("/", 1)[-1] or None
+
+
+def _term_name_from_cell_type(cell_type):
+    """The human-readable name on the same embedded SampleTerm object
+    _cl_id_from_cell_type reads (e.g. "macrophage" for CL:0000235) --
+    requires field=cell_type.term_name in the multireport query string
+    (confirmed against a real production call, 2026-07-23)."""
+    if not isinstance(cell_type, dict):
+        return None
+    return cell_type.get("term_name") or None
+
+
+def _term_id_from_cell_type(cell_type):
+    """The portal's own CURIE-style "term_id" (e.g. "CL:0000235") -- NOT the
+    same string as cl_id/_cl_id_from_cell_type's "@id"-derived form
+    ("CL_0000235", underscore): the E2G tabular-file reformatting step wants
+    this exact CURIE form for its "CL Term ID" column, so it's cached
+    verbatim rather than derived by string-swapping cl_id."""
+    if not isinstance(cell_type, dict):
+        return None
+    return cell_type.get("term_id") or None
 
 
 def _local_subsamples(cluster_keys, cluster_configs):
@@ -229,6 +252,8 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             subsample,
             row.get("cell_annotation"),
             _cl_id_from_cell_type(row.get("cell_type")),
+            _term_id_from_cell_type(row.get("cell_type")),
+            _term_name_from_cell_type(row.get("cell_type")),
             row.get("cell_qualifier"),
             row.get("status"),
             now,
@@ -275,6 +300,11 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             )
             continue
         cell_annotation, cl_id, cell_qualifier = next(iter(triples))
+        # term_id/term_name are both deterministic functions of cl_id (all three come
+        # off the same embedded cell_type object) -- their consistency is already
+        # implied by the triples check above, so no need to fold them into that set too.
+        term_id = _term_id_from_cell_type(scope_rows[0].get("cell_type"))
+        term_name = _term_name_from_cell_type(scope_rows[0].get("cell_type"))
 
         all_primary_released = all(r.get("status") == "released" for r in scope_rows)
         principal_alias = principal_by_annotation.get(cell_annotation)
@@ -285,6 +315,8 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             cluster,
             cell_annotation,
             cl_id,
+            term_id,
+            term_name,
             cell_qualifier,
             ",".join(sorted(local_subsamples_set)),
             all_primary_released,
@@ -303,10 +335,10 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
 
 
 def get_metadata_for(ctx):
-    """Should return {"cl_id": ..., "cell_qualifier": ...} for
-    (ctx.dataset, ctx.cluster) -- raises if that scope's cache row is
-    missing (never successfully cached yet -- see refresh_if_stale's
-    per-scope skip conditions above)."""
+    """Should return {"cl_id": ..., "term_id": ..., "term_name": ...,
+    "cell_qualifier": ...} for (ctx.dataset, ctx.cluster) -- raises if that
+    scope's cache row is missing (never successfully cached yet -- see
+    refresh_if_stale's per-scope skip conditions above)."""
     row = state.get_cell_annotation(ctx.conn, ctx.dataset, ctx.cluster)
     if row is None:
         raise ValueError(
@@ -314,7 +346,12 @@ def get_metadata_for(ctx):
             "cache hasn't been refreshed yet, or this scope failed its consistency/subset validation "
             "(see cell_metadata.refresh_if_stale logs)"
         )
-    return {"cl_id": row["cl_id"], "cell_qualifier": row["cell_qualifier"]}
+    return {
+        "cl_id": row["cl_id"],
+        "term_id": row["term_id"],
+        "term_name": row["term_name"],
+        "cell_qualifier": row["cell_qualifier"],
+    }
 
 
 def build_shareable_rows(conn):
