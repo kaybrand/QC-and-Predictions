@@ -40,13 +40,29 @@ pseudobulk row in the same multireport response already carries this exact
 cell_annotation value (the portal auto-populates that field on a principal
 upload) -- no local upload-ledger lookup needed for that second condition.
 
-Every anomaly here (an inconsistent triple within a group, a local
-subsample missing from its portal group) is logged and skips just that one
-(dataset, cluster) scope, never the whole refresh -- same
+Two different kinds of per-scope anomaly get two different treatments
+(2026-07-24). A local subsample missing from its portal group, or
+disagreement on (cl_id, term_id, term_name) across a scope's contributing
+primaries, still skips just that one (dataset, cluster) scope entirely (same
 try/except-and-log-and-continue discipline orchestrator.plan_table already
-uses for enabled() failures. A skipped scope simply leaves its cache row
-stale/absent; get_metadata_for raises for it, same as any other
-still-unresolved stub in this package.
+uses for enabled() failures) -- a skipped scope leaves its cache row
+stale/absent, and get_metadata_for raises for it, same as any other
+still-unresolved stub in this package. term_id/term_name/cl_id disagreement
+specifically should never happen (they're all deterministic functions of the
+same embedded cell_type object) and signals two genuinely different cell
+types merged under one cluster name -- a real data problem to investigate,
+not to paper over.
+
+cell_annotation/cell_qualifier disagreement, in contrast, is resolved rather
+than skipped: real production data confirms this is routine, benign
+messiness (e.g. one contributing subsample's cell_annotation carries a
+"derived from {other cell line}" cross-contamination label that the others
+don't) -- picking the value from whichever contributing subsample has the
+most cells in that cluster's own filtered barcode QC guide (the same
+most-to-least-contributive subsample ordering already used for Prediction
+Set's/Principal Pseudobulk Set's own `samples` field, see
+subsamples.subsamples_by_frequency) resolves this cleanly instead of leaving
+the scope permanently uncached.
 
 2026-07-22 correction: EVERY primary/principal-pseudobulk row the
 multireport GET returns is saved unconditionally, to
@@ -173,11 +189,17 @@ def _term_id_from_cell_type(cell_type):
 
 
 def _local_subsamples(cluster_keys, cluster_configs):
-    """{(dataset, cluster): set(local subsample ids)} -- one entry per local scope."""
+    """{(dataset, cluster): [local subsample ids, most-to-least contributing]} --
+    one entry per local scope. Ordered by descending cell count in that
+    cluster's own filtered barcode QC guide (subsamples.subsamples_by_frequency
+    -- same ordering already used for Prediction Set's/Principal Pseudobulk
+    Set's own `samples` field) rather than an unordered set, so
+    refresh_if_stale can resolve cell_annotation/cell_qualifier disagreement
+    by picking the most-contributing subsample's own values."""
     by_scope = {}
     for dataset, cluster in cluster_keys:
         ctx = Context(dataset, cluster, None, cluster_configs[(dataset, cluster)], None, None)
-        by_scope[(dataset, cluster)] = set(subsamples.unique_subsamples(ctx))
+        by_scope[(dataset, cluster)] = subsamples.subsamples_by_frequency(ctx)
     return by_scope
 
 
@@ -267,14 +289,14 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
     )
 
     matched_suffixes = set()
-    for (dataset, cluster), local_subsamples_set in local_by_scope.items():
+    for (dataset, cluster), local_subsamples in local_by_scope.items():
         # (subsample, cluster) -- not subsample alone -- is the real unique key (2026-07-22
         # finding: one MULTI-seq-tagged subsample routinely has many distinct pseudobulks,
         # one per downstream-annotated cluster). The alias is the only field that currently
         # encodes cluster identity, so match candidate suffixes built from OUR OWN known
         # (dataset, cluster, subsample) triples against it, rather than parsing the alias's
         # ambiguous hyphen-separated segments blind.
-        candidate_suffixes = {f"{dataset}-{cluster}-{s}": s for s in local_subsamples_set}
+        candidate_suffixes = {f"{dataset}-{cluster}-{s}": s for s in local_subsamples}
         matched_suffixes |= set(candidate_suffixes)
         missing_locally = [s for suffix, s in candidate_suffixes.items() if suffix not in primary_by_alias_suffix]
         if missing_locally:
@@ -287,24 +309,45 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             continue
         scope_rows = [primary_by_alias_suffix[suffix] for suffix in candidate_suffixes]
 
-        # cell_type is an unhashable dict -- reduce to the bare cl_id string (already
-        # extracted once per row into the raw cache above) before using it in a set.
-        triples = {
-            (r.get("cell_annotation"), _cl_id_from_cell_type(r.get("cell_type")), r.get("cell_qualifier"))
+        # term_id/term_name/cl_id all come off the SAME embedded cell_type object and
+        # should always agree across every contributing subsample -- unlike
+        # cell_annotation (which routinely carries legitimate "derived from X"
+        # cross-contamination text), disagreement here means two genuinely different
+        # cell types got merged under one cluster name. That's a real data problem to
+        # flag and investigate, not to silently paper over -- skip this scope's cache,
+        # same as a missing-subsample scope.
+        term_triples = {
+            (
+                _cl_id_from_cell_type(r.get("cell_type")),
+                _term_id_from_cell_type(r.get("cell_type")),
+                _term_name_from_cell_type(r.get("cell_type")),
+            )
             for r in scope_rows
         }
-        if len(triples) != 1:
+        if len(term_triples) != 1:
             log(
-                f"{dataset}/{cluster}: {len(triples)} distinct Cell Annotation/Cell Type/Cell Qualifier "
-                f"triples across its primary pseudobulks (expected exactly 1) -- skipping this scope's cache"
+                f"WARNING {dataset}/{cluster}: {len(term_triples)} distinct (cl_id, term_id, term_name) "
+                f"triples across its primary pseudobulks -- this should never happen (these are supposed "
+                f"to always agree, unlike cell_annotation) -- skipping this scope's cache until investigated"
             )
             continue
-        cell_annotation, cl_id, cell_qualifier = next(iter(triples))
-        # term_id/term_name are both deterministic functions of cl_id (all three come
-        # off the same embedded cell_type object) -- their consistency is already
-        # implied by the triples check above, so no need to fold them into that set too.
-        term_id = _term_id_from_cell_type(scope_rows[0].get("cell_type"))
-        term_name = _term_name_from_cell_type(scope_rows[0].get("cell_type"))
+        cl_id, term_id, term_name = next(iter(term_triples))
+
+        # cell_annotation/cell_qualifier legitimately vary -- resolve via the
+        # most-contributing subsample (local_subsamples is ordered most-to-least
+        # contributing, see _local_subsamples) rather than requiring unanimous
+        # agreement across every contributing subsample.
+        annotation_qualifier_pairs = {(r.get("cell_annotation"), r.get("cell_qualifier")) for r in scope_rows}
+        winning_subsample = local_subsamples[0]
+        winning_row = primary_by_alias_suffix[f"{dataset}-{cluster}-{winning_subsample}"]
+        if len(annotation_qualifier_pairs) != 1:
+            log(
+                f"{dataset}/{cluster}: {len(annotation_qualifier_pairs)} distinct Cell Annotation/Cell "
+                f"Qualifier pairs across its primary pseudobulks -- resolved using the most-contributing "
+                f"subsample ({winning_subsample})"
+            )
+        cell_annotation = winning_row.get("cell_annotation")
+        cell_qualifier = winning_row.get("cell_qualifier")
 
         all_primary_released = all(r.get("status") == "released" for r in scope_rows)
         principal_alias = principal_by_annotation.get(cell_annotation)
@@ -318,7 +361,7 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             term_id,
             term_name,
             cell_qualifier,
-            ",".join(sorted(local_subsamples_set)),
+            ",".join(sorted(local_subsamples)),
             all_primary_released,
             principal_alias is not None,
             principal_alias,
