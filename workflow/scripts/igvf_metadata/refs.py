@@ -40,15 +40,28 @@ qc_thresholds_document_alias() is confirmed and deterministic (used by
 both Principal Pseudobulk Set's and Filtered Barcode Lists' `documents`) --
 scope="cluster", not cluster_model, same as Principal Pseudobulk Set.
 
-per_cell_quality_report_aliases() / plotting_analysis_step_version_alias()
-are true stubs -- Filtered Barcode Lists' derived_from (the per-cluster
-per-cell QC metric files, content_type "per-cell quality report") and
-analysis_step_version ("alias of plotting scripts analysis step version,
-to be created") don't have formulas yet.
+per_cell_quality_report_aliases() is still a true stub -- Filtered Barcode
+Lists' derived_from (the per-cluster per-cell QC metric files, content_type
+"per-cell quality report") has no formula yet.
+
+plotting_analysis_step_version_alias() (2026-07-29): resolved to the real
+portal analysis step version /analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/
+for Filtered Barcode Lists.
+
+qc_guide_to_atac_fragment_analysis_step_version_alias() /
+qc_guide_to_rna_matrix_analysis_step_version_alias() (2026-07-29): both
+resolved to the same real portal analysis step version,
+_PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION below -- kept as two distinct
+functions (one per calling table's own semantics: ATAC fragment/index vs.
+RNA matrix workflow) even though the value happens to coincide today.
 """
 
 from . import registry
 from .context import make_alias
+
+# Shared by qc_guide_to_atac_fragment_analysis_step_version_alias and
+# qc_guide_to_rna_matrix_analysis_step_version_alias -- see module docstring.
+_PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/"
 
 
 def prediction_set_alias(ctx):
@@ -118,17 +131,11 @@ def per_cell_quality_report_aliases(ctx):
 
 
 def plotting_analysis_step_version_alias(ctx):
-    raise NotImplementedError(
-        "Filtered Barcode Lists' analysis_step_version names 'alias of plotting scripts "
-        "analysis step version, to be created' -- not created/aliased yet."
-    )
+    return "/analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/"
 
 
 def qc_guide_to_atac_fragment_analysis_step_version_alias(ctx):
-    raise NotImplementedError(
-        "ATAC Index File's analysis_step_version names 'alias of QC guide to ATAC "
-        "fragment file workflow version, to be created' -- not created/aliased yet."
-    )
+    return _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION
 
 
 def annotation_table_alias(ctx):
@@ -159,10 +166,7 @@ def primary_pseudobulk_atac_fragment_aliases(ctx):
 
 
 def qc_guide_to_rna_matrix_analysis_step_version_alias(ctx):
-    raise NotImplementedError(
-        "Filtered Matrix Files' analysis_step_version names 'alias of QC guide to RNA "
-        "count matrix workflow version, to be created' -- not created/aliased yet."
-    )
+    return _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION
 
 
 def primary_pseudobulk_h5ad_aliases(ctx):

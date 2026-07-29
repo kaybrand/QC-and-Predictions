@@ -21,9 +21,10 @@ Because (1) and (2) raise, this table's own rows never reach 'uploaded'
 until those lookup mechanisms are built -- which correctly keeps every
 downstream table (everything depends_on-ing this one) deferred too.
 
-analysis_step_version reuses the same stub as ATAC Index File
-(refs.qc_guide_to_atac_fragment_analysis_step_version_alias) -- confirmed
-"cluster agnostic," to be manually produced later, same object either way.
+analysis_step_version reuses the same resolved reference as ATAC Index File
+(refs.qc_guide_to_atac_fragment_analysis_step_version_alias, resolved
+2026-07-29 to /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/)
+-- confirmed "cluster agnostic," same object either way.
 
 file_format_specifications is a raw portal path (/documents/<uuid>/), not
 an alias -- an existing Document this pipeline doesn't create itself, so

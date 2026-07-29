@@ -21,9 +21,9 @@ file_format_specifications is explicitly "{alias TBD}" (unlike Filtered
 ATAC Fragment Files' already-known /documents/<uuid>/ path) --
 refs.rna_matrix_file_format_specifications_alias, a stub.
 
-analysis_step_version is its own stub, distinct from ATAC's
-(refs.qc_guide_to_rna_matrix_analysis_step_version_alias) -- a different
-workflow (QC guide -> RNA count matrix, not -> ATAC fragment file).
+analysis_step_version (refs.qc_guide_to_rna_matrix_analysis_step_version_alias,
+resolved 2026-07-29) is /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/
+-- the same analysis step version as ATAC's, per portal manager feedback.
 
 description reads "Matrix Market" (confirmed 2026-07-16) -- the standard
 sparse-matrix file format name, matching file_format "tar" bundling a

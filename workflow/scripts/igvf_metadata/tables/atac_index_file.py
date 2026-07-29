@@ -17,8 +17,8 @@ Context.multiome_data_cluster_dir) -- same Synapse-side filtered_data
 location the existing Synapse manifest system already uploads
 atac_fragments_{dataset}_{cluster}.tsv.gz from.
 
-analysis_step_version is a true stub (refs.qc_guide_to_atac_fragment_analysis_step_version_alias)
--- "to be created," no alias given yet.
+analysis_step_version (refs.qc_guide_to_atac_fragment_analysis_step_version_alias,
+resolved 2026-07-29) is /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/.
 
 reference_files removed (2026-07-20 feedback): not a submittable field for
 type IndexFile (content_type=index).
