@@ -181,7 +181,7 @@ def primary_pseudobulk_h5ad_aliases(ctx):
 
 
 def rna_matrix_file_format_specifications_alias(ctx):
-    raise NotImplementedError(
-        "Filtered Matrix Files' file_format_specifications is explicitly '{alias TBD}' "
-        "-- not decided/given yet."
-    )
+    """Resolved 2026-07-29: the RNA count Matrix Market tar archive's own file
+    format specification Document, uploaded as a one-off via
+    igvf_manifests/rna_matrix_market_file_format_spec_uploader.tsv."""
+    return "jesse-engreitz:rna_matrix_market_tar_archive_file_format"

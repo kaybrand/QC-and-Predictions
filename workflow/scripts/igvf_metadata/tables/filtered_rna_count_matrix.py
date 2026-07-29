@@ -17,9 +17,11 @@ derived_from mirrors Filtered ATAC Fragment Files' three-part shape:
   3. jesse-engreitz:{dataset}_{cluster}_filtered_barcode_list -- known,
      references the real filtered_barcode_list table directly.
 
-file_format_specifications is explicitly "{alias TBD}" (unlike Filtered
-ATAC Fragment Files' already-known /documents/<uuid>/ path) --
-refs.rna_matrix_file_format_specifications_alias, a stub.
+file_format_specifications (refs.rna_matrix_file_format_specifications_alias,
+resolved 2026-07-29) is jesse-engreitz:rna_matrix_market_tar_archive_file_format
+-- a one-off Document uploaded via
+igvf_manifests/rna_matrix_market_file_format_spec_uploader.tsv, unlike
+Filtered ATAC Fragment Files' already-known /documents/<uuid>/ path.
 
 analysis_step_version (refs.qc_guide_to_rna_matrix_analysis_step_version_alias,
 resolved 2026-07-29) is /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/
@@ -74,7 +76,7 @@ def _row(ctx):
         "analysis_step_version": refs.qc_guide_to_rna_matrix_analysis_step_version_alias(ctx),
         "derived_from": ",".join(derived_from_parts),
         "description": f"Filtered Matrix Market file containing RNA transcripts for cells annotated as {ctx.cluster}",
-        "file_format_specifications": refs.rna_matrix_file_format_specifications_alias(ctx),
+        "file_format_specifications": [refs.rna_matrix_file_format_specifications_alias(ctx)],
         "submitted_file_name": _path(ctx),
     }
 
