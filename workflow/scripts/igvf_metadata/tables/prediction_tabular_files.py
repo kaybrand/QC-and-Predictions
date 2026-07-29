@@ -160,7 +160,7 @@ def _full_row(ctx):
         parts.append(refs.rna_matrix_alias(ctx))
         parts.append(build_alias(ctx, "genes"))
     return {
-        "content_type": "element to gene predictions",
+        "content_type": "element to gene interactions",
         "file_format": "tsv",
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
@@ -171,7 +171,7 @@ def _full_row(ctx):
 
 def _thresholded_row(ctx):
     return {
-        "content_type": "element to gene predictions",
+        "content_type": "element to gene interactions",
         "file_format": "tsv",
         "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
@@ -182,7 +182,7 @@ def _thresholded_row(ctx):
 
 def _bedpe_row(ctx):
     return {
-        "content_type": "element to gene predictions",
+        "content_type": "element to gene interactions",
         "file_format": "bedpe",
         "description": (
             f"Bedpe file for genome browser visualization of thresholded scE2G ({family(ctx.model)}) "
