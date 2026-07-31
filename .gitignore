@@ -14,6 +14,24 @@
 !workflow/
 !workflow/**
 
+# Standalone IGVF cell-annotation report script -- sent independently of the
+# QC-and-Predictions pipeline, so it lives outside workflow/ but is still code.
+!igvf_cell_annotation_report/
+!igvf_cell_annotation_report/**
+
+# This repo is PUBLIC. The two lines above un-ignore everything under
+# igvf_cell_annotation_report/ -- defense-in-depth re-ignore for anything that
+# looks like a credentials file, however it got there. The script itself only
+# ever reads IGVF_API_KEY/IGVF_SECRET_KEY from the environment and never
+# writes them anywhere, but this guards against a stray local .env/credentials
+# file someone drops in that folder later getting swept up by `git add -A`.
+igvf_cell_annotation_report/*.env
+igvf_cell_annotation_report/.env*
+igvf_cell_annotation_report/*credential*
+igvf_cell_annotation_report/*secret*
+igvf_cell_annotation_report/*.pem
+igvf_cell_annotation_report/*.key
+
 # Real per-dataset/per-run pipeline configs and cluster metadata: never tracked,
 # only the example templates are (re-included below).
 workflow/config/*
