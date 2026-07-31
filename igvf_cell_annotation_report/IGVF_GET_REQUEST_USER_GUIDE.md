@@ -6,9 +6,8 @@ pseudobulk (`PseudobulkSet`) currently on the portal: CellAnnotation,
 SampleTermID, SampleTermName, CellQualifier, contributing subsamples, and
 release status.
 
-It needs only an IGVF API key/secret pair -- no access to this lab's
-pipeline, config files, or anything else, in its default mode. An optional
-second mode additionally takes this lab's own per-cluster QC guide
+It needs only an IGVF API key/secret pair in its default mode. An optional
+second mode additionally takes a local per-cluster QC filter guide
 directory, if you have it, to resolve a single value per cluster instead of
 reporting every value that disagrees. **Pick a specific commit before you
 run either mode** -- see below.
@@ -21,8 +20,7 @@ only difference is how much they can resolve.
 
 | | No `--qc-guide-dir` | `--qc-guide-dir <path>` |
 |---|---|---|
-| Works for | Everyone with an IGVF key pair | Only clusters this lab has shared a QC guide for |
-| `CellAnnotation`/`SampleTermID`/`SampleTermName`/`CellQualifier` | Every distinct value seen, `" | "`-joined -- a disagreement report | A single resolved value, wherever a matching guide is found |
+| `CellAnnotation`/`SampleTermID`/`SampleTermName`/`CellQualifier` | Every distinct value seen | A single resolved value, wherever a matching guide is found |
 | `Subsamples` order | Alphabetical (no contribution info available) | Descending by cell count, from the guide |
 | `QCGuideFile` | Always blank | The guide's filename, when one was used to resolve that row -- **blank on any row that mode couldn't resolve** (no matching guide found, or the row's own contributing primaries disagreed on SampleTermID/SampleTermName, which should never happen and isn't trusted if it does) |
 
@@ -34,7 +32,7 @@ resolved," non-blank means "resolved from that guide file."
 
 ## Pick a specific commit
 
-This repo (and this script) changes over time. Before you run it, pick a
+This repo changes over time. Before you run it, pick a
 commit and stick with it, rather than tracking a moving branch -- that way
 your results are reproducible and you know exactly what logic produced
 them:
@@ -60,26 +58,22 @@ Record `<commit-sha>` alongside any output you share from this script.
 ## Credentials
 
 **This repository is public.** The script authenticates via `igvf_utils`,
-which reads three environment variables -- it never takes credentials as
-command-line arguments, never reads them from a file, and never writes them
-anywhere. Never commit a key/secret into this repo (or any fork/copy of
-it), a script, a ticket, or a chat message.
+which reads your key/secret pair from two environment variables -- it never
+takes credentials as command-line arguments, never reads them from a file,
+and never writes them anywhere. Never commit a key/secret into this repo (or
+any fork/copy of it), a script, or a ticket.
 
 ```bash
 export IGVF_API_KEY=your_key_id_here
 export IGVF_SECRET_KEY=your_secret_key_here
-export IGVF_MODE=prod   # or: staging, sandbox
 ```
 
 - Get a key/secret pair from your IGVF DACC data wrangler if you don't
-  already have one.
-- `IGVF_MODE=prod` points at the real production portal
-  (`https://api.data.igvf.org/`); use `staging`/`sandbox` only if you were
-  specifically given credentials for one of those instances.
-- Setting these in your shell (as above), or in a local `.env`-style file
-  you `source` yourself and never `git add`, are both fine. If you keep such
-  a file inside this folder, double check `git status` before committing
-  anything -- don't rely solely on `.gitignore`.
+  already have one. You only need READ access keys to run this.
+- Which portal instance to query is set by `--igvf-mode`, not an environment
+  variable -- it defaults to `prod` (the real production portal,
+  `https://api.data.igvf.org/`), so you don't need to set anything for
+  normal use. 
 
 ## Usage
 
@@ -93,7 +87,7 @@ python get_igvf_cell_annotation_report.py
 Writes `cell_annotations_by_dataset_cluster.tsv` in the current directory.
 Use `-o/--output` to write somewhere else.
 
-Mode 2 -- additionally resolves a single value per cluster, wherever a
+Mode 2 -- additionally resolves a single Cell Annotation per cluster, wherever a
 matching QC guide is found:
 
 ```bash
@@ -141,8 +135,6 @@ two disagreeing ones.
 
 ## Troubleshooting
 
-- **`KeyError: 'IGVF_MODE'`** -- you haven't set the `IGVF_MODE` environment
-  variable (and didn't pass `--igvf-mode`). Set it as shown above.
 - **401/403 response** -- your API key/secret is missing, wrong, or expired.
   Double-check the exported values and confirm the key pair is active with
   your DACC data wrangler.
