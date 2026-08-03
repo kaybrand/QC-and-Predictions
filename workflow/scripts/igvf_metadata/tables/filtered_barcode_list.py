@@ -51,7 +51,7 @@ def _row(ctx):
         "file_format": "tsv",
         "content_type": "barcode to sample mapping",
         "documents": [refs.qc_thresholds_document_alias(ctx)],
-        "file_format_specifications": [make_alias(ctx.igvf, "filtered_barcode_list_format_specification")],
+        "file_format_specifications": [refs.filtered_barcode_list_file_format_specifications_alias(ctx)],
         "derived_from": ",".join(refs.per_cell_quality_report_aliases(ctx)),
         "description": (
             f"Filtered list of 16-bp cell barcodes defining membership in the {ctx.cluster}; "

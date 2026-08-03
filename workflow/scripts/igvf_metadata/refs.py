@@ -187,3 +187,9 @@ def rna_matrix_file_format_specifications_alias(ctx):
     format specification Document, uploaded as a one-off via
     igvf_manifests/rna_matrix_market_file_format_spec_uploader.tsv."""
     return "jesse-engreitz:rna_matrix_market_tar_archive_file_format"
+
+
+def filtered_barcode_list_file_format_specifications_alias(ctx):
+    """Resolved 2026-08-03: Filtered Barcode Lists' own file format
+    specification Document alias."""
+    return "jesse-engreitz:filtered_barcode_membership_file_format"
