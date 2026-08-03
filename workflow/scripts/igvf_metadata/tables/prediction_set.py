@@ -51,7 +51,7 @@ def _row(ctx):
         "derived_from": ",".join(derived_from_parts),
         "documents": [make_alias(ctx.igvf, "E2G_prediction_set_files")],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
-        "samples": subsamples.subsamples_by_frequency(ctx),  # TODO: raw labels vs Sample-object aliases -- see module docstring
+        "samples": subsamples.subsamples_by_frequency(ctx),  # raw values ARE Sample accessions already -- see module docstring
     }
 
 

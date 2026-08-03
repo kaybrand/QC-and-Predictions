@@ -11,9 +11,10 @@ of that.
 
 file_set reuses refs.prediction_set_alias -- confirmed formula (2026-07-13).
 
-derived_from (the filtered ATAC fragment TabularFile) is a true stub via
+derived_from (the filtered ATAC fragment TabularFile) is resolved via
 refs.atac_fragment_alias, same as Prediction Tabular Files' full/elements
-rows -- fill in refs.py once that table's alias format is known.
+rows -- delegates to the real filtered_atac_fragment_file TableSpec (see
+refs.py's own docstring).
 
 submitted_file_name does NOT vary by model in the given path
 (.../{dataset}/{cluster}/ATAC_norm.bw) even though this table is
