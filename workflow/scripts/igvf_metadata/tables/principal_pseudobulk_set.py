@@ -11,6 +11,8 @@ DIFFERENT lab (Anshul Kundaje's), in THEIR alias namespace -- confirmed
 this lab's usual underscore/jesse-engreitz convention). One entry per
 relevant subsample. Hardcoded as a literal, not derived from
 ctx.igvf.alias_prefix, since it names someone else's namespace, not ours.
+`dataset` here is UNRESOLVED for the coming months, same as every
+jesse-engreitz alias -- see context.py's make_alias() docstring.
 
 cell_type/cell_qualifier still need the live-portal-lookup mechanism
 discussed but not yet resolved (which field to index the multireport

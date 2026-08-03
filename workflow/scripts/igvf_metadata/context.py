@@ -102,5 +102,21 @@ class Context:
 
 def make_alias(igvf: IgvfConfig, *parts) -> str:
     """Every ITEM_ALIAS across every table is "{alias_prefix}:{'_'.join(parts)}" --
-    this is the one place that format is defined."""
+    this is the one place that format is defined.
+
+    UNRESOLVED, flagged 2026-08-03 for follow-up in the coming months (do
+    NOT change `dataset` pre-emptively -- nothing here is confirmed yet):
+    this pipeline's informal `dataset` labels (igvf1, igvf2, ...) are
+    expected to be retired from IGVF Portal-facing identifiers sometime in
+    2027, in favor of each dataset's principal analysis set accession (e.g.
+    igvf4 -> IGVFDS5875AFXS). Every alias built here -- and the Kundaje-lab
+    "anshul-kundaje:{dataset}-{cluster}-{subsample}"-shaped aliases in
+    refs.py/tables/principal_pseudobulk_set.py -- embeds `dataset` literally,
+    so all of them are exposed once that rename lands. The current
+    dataset<->accession mapping is regenerable via
+    igvf_cell_annotation_report/map_dataset_to_principal_analysis_set/
+    check_dataset_accession_mapping.py (writes
+    dataset_to_principal_analysis_set_accession.json in that same
+    directory) -- useful for scoping the eventual migration, not needed for
+    anything today."""
     return f"{igvf.alias_prefix}:" + "_".join(str(p) for p in parts)
