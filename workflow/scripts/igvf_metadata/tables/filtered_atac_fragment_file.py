@@ -35,9 +35,8 @@ reference_files. This table's reference_files must instead name the file(s)
 the code that GENERATES this data file directly used -- i.e. the
 chrom-sizes file workflow/rules/filter_pseudobulks.smk passes as
 filter_atac_fragments.py's --chrom-sizes
-(reference/IGVF.DACC.GRCh38.chrom.sizes.tsv). Its IGVF accession/alias isn't
-confirmed yet, so _CHROM_SIZES_REFERENCE_FILE below is an explicit
-placeholder pending that.
+(reference/IGVF.DACC.GRCh38.chrom.sizes.tsv). Resolved 2026-08-03:
+IGVFFI6788CPPS.
 """
 
 import os
@@ -47,10 +46,9 @@ from ..context import make_alias
 
 TABLE_NAME = "filtered_atac_fragment_file"
 
-# PLACEHOLDER: real IGVF accession/alias for reference/IGVF.DACC.GRCh38.chrom.sizes.tsv
-# (the chrom-sizes file filter_atac_fragments.py's --chrom-sizes flag reads) not
-# confirmed yet -- fill in once known, see module docstring.
-_CHROM_SIZES_REFERENCE_FILE = "PLACEHOLDER_IGVF_alias_for_reference_IGVF.DACC.GRCh38.chrom.sizes.tsv"
+# The chrom-sizes file filter_atac_fragments.py's --chrom-sizes flag reads
+# (reference/IGVF.DACC.GRCh38.chrom.sizes.tsv) -- confirmed 2026-08-03.
+_CHROM_SIZES_REFERENCE_FILE = "IGVFFI6788CPPS"
 
 
 def build_alias(ctx, variant_name):
