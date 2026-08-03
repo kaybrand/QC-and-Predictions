@@ -14,6 +14,16 @@ from typing import Optional
 # since this package has no access to Snakemake's `workflow` object.
 WDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 
+# The `main`-branch QC_pseudobulks worktree's own root -- a sibling worktree
+# of this repo (this repo is the igvf-portal-submission worktree), per `git
+# worktree list`. multiome_data_cluster_dir below reads already-filtered
+# ATAC/RNA data from there, same "read pre-existing artifacts from the
+# main-branch worktree" pattern as tables/qc_documents.py's
+# QC_PSEUDOBULKS_PLOTS_DIR (fixed 2026-08-03 after the same class of bug:
+# this used to be `WDIR`-relative, silently finding nothing since this
+# worktree has no multiome_data/ dir of its own).
+QC_PSEUDOBULKS_WDIR = "/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks"
+
 
 @dataclass(frozen=True)
 class IgvfConfig:
@@ -66,9 +76,23 @@ class Context:
 
     @property
     def multiome_data_cluster_dir(self):
-        """Mirrors common.smk's multiome_data_dir(dataset)/cluster -- the
-        Synapse-side filtered_data location, NOT scE2G's own results dir."""
-        return os.path.join(WDIR, "multiome_data", self.dataset, self.cluster)
+        """The Synapse-side filtered_data location, NOT scE2G's own results
+        dir. Corrected 2026-08-03: reads from QC_PSEUDOBULKS_WDIR (the
+        main-branch QC_pseudobulks worktree), not this worktree's own WDIR --
+        this worktree has no multiome_data/ dir of its own; the real
+        already-filtered ATAC/RNA data for existing clusters lives in the
+        main-branch worktree (produced by that repo's legacy manual filtering
+        before this Snakemake pipeline existed).
+
+        NOTE this now DIVERGES from workflow/rules/common.smk's own
+        multiome_data_dir(dataset), which is still WDIR-relative (this
+        worktree) -- that's what filter_pseudobulks.smk's rules actually
+        write fresh output to. So a cluster with no pre-existing legacy data
+        that gets filtered for the first time by THIS pipeline's own Snakemake
+        rules would land in a different directory than this property looks
+        in. Flagged, not resolved -- unifying the two (or teaching this
+        property to check both locations) is unresolved follow-up."""
+        return os.path.join(QC_PSEUDOBULKS_WDIR, "multiome_data", self.dataset, self.cluster)
 
     def with_model(self, model):
         return Context(
