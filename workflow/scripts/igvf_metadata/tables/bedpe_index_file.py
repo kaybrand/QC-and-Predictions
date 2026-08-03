@@ -1,6 +1,5 @@
-"""BEDPE Index File -- object_type "tabular_file" (TODO: confirm -- mirrors
-Prediction Tabular Files' shape closely enough that this is a reasonable
-guess, but could be a distinct index/reference-file profile). Scope
+"""BEDPE Index File -- object_type "index_file" (confirmed 2026-08-03, same
+as ATAC Index File -- not tabular_file as previously guessed). Scope
 cluster_model, one row per (dataset, cluster, model): the .tbi index for
 the thresholded BEDPE prediction file.
 
@@ -68,7 +67,7 @@ def _scope_fields(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="tabular_file",
+        object_type="index_file",
         scope="cluster_model",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type", "controlled_access"],

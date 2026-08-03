@@ -58,7 +58,7 @@ def _row(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="prediction_set",  # TODO: confirm actual portal profile id
+        object_type="prediction_set",  # confirmed 2026-08-03
         scope="cluster_model",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab"],

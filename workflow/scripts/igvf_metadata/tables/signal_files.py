@@ -1,6 +1,5 @@
-"""Signal Files -- object_type "signal_file" (TODO: confirm this is the
-actual portal profile id used for --profile_id), scope cluster_model.
-Exactly one row per (dataset, cluster, model): the ATAC read-depth bigWig.
+"""Signal Files -- object_type "signal_file" (confirmed 2026-08-03), scope
+cluster_model. Exactly one row per (dataset, cluster, model): the ATAC read-depth bigWig.
 
 Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
 feedback) needs no code here -- enforced once, centrally, in

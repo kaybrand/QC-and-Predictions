@@ -1,5 +1,5 @@
-"""ATAC Index File -- object_type "tabular_file" (TODO: confirm portal
-profile id), scope "cluster" -- one per (dataset, cluster), NOT split by
+"""ATAC Index File -- object_type "index_file" (confirmed 2026-08-03), scope
+"cluster" -- one per (dataset, cluster), NOT split by
 model: aliases/file_set/derived_from/submitted_file_name all have no
 {Family}/model component, since the ATAC fragment file (and its index) is
 shared across both Multiome and scATAC predictions for a cluster.
@@ -67,7 +67,7 @@ def _scope_fields(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="tabular_file",  # TODO: confirm actual portal profile id
+        object_type="index_file",
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type", "controlled_access"],

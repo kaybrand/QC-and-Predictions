@@ -1,5 +1,5 @@
-"""Filtered ATAC Fragment Files -- object_type "tabular_file" (TODO:
-confirm portal profile id), scope "cluster" -- one per (dataset, cluster),
+"""Filtered ATAC Fragment Files -- object_type "tabular_file" (confirmed
+2026-08-03), scope "cluster" -- one per (dataset, cluster),
 scE2G-Family-agnostic like everything else whose file_set is the Principal
 Pseudobulk Set (confirmed 2026-07-16).
 
@@ -93,7 +93,7 @@ def _scope_fields(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="tabular_file",  # TODO: confirm actual portal profile id
+        object_type="tabular_file",  # confirmed 2026-08-03
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type", "controlled_access"],

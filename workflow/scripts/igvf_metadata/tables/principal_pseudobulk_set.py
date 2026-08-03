@@ -1,5 +1,5 @@
-"""Principal Pseudobulk Set -- object_type "pseudobulk_set" (TODO: confirm
-portal profile id; multireport query used type=PseudobulkSet). Scope
+"""Principal Pseudobulk Set -- object_type "pseudobulk_set" (confirmed
+2026-08-03; multireport query used type=PseudobulkSet). Scope
 "cluster" -- one per (dataset, cluster), NOT split by model: up to 10
 models' Prediction Sets can point at the same Principal Pseudobulk Set via
 refs.principal_pseudobulk_set_alias (see prediction_set.py's
@@ -80,7 +80,7 @@ def _row(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="pseudobulk_set",  # TODO: confirm actual portal profile id
+        object_type="pseudobulk_set",  # confirmed 2026-08-03
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_set_type"],

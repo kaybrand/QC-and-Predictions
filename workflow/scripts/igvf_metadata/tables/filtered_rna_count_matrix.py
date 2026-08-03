@@ -1,5 +1,5 @@
-"""Filtered Matrix Files -- object_type "tabular_file" (TODO: confirm
-portal profile id), scope "cluster" -- one per (dataset, cluster),
+"""Filtered Matrix Files -- object_type "matrix_file" (confirmed 2026-08-03
+-- not tabular_file as previously guessed), scope "cluster" -- one per (dataset, cluster),
 scE2G-Family-agnostic like everything else whose file_set is the Principal
 Pseudobulk Set (same as Filtered ATAC Fragment Files).
 
@@ -91,7 +91,7 @@ def _scope_fields(ctx):
 TABLE = registry.register(
     registry.TableSpec(
         name=TABLE_NAME,
-        object_type="tabular_file",  # TODO: confirm actual portal profile id
+        object_type="matrix_file",  # confirmed 2026-08-03 -- not tabular_file as previously guessed
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type"],
