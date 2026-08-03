@@ -64,11 +64,16 @@ def get_qc_stats_targets():
 
 
 def get_igv_track_files():
-    """ATAC_norm.bw (per cluster) + thresholded .bedpe (per cluster/model),
-    produced by scE2G's own (unexcluded) frag_to_norm_bigWig/
-    write_sc_e2g_predictions_bedpe rules -- targeted directly by path, no new
-    rule needed. Gated on scE2G_options.make_IGV_tracks exactly like scE2G's
-    own `rule all` gates the same files, since we don't reuse that rule."""
+    """ATAC_norm.bw (per cluster), produced directly by scE2G's own
+    (unexcluded) frag_to_norm_bigWig rule -- targeted by path, no new rule
+    needed. The thresholded .bedpe additionally needs bgzip+tabix for IGVF
+    Portal submission (Synapse submission uses scE2G's raw .bedpe as-is, via
+    reformat.smk's own targets, so this is IGVF-only): scE2G's own
+    write_sc_e2g_predictions_bedpe rule only emits a plain, uncompressed,
+    unindexed .bedpe, so this targets bgzip_index_bedpe's .bedpe.gz/.tbi
+    outputs below instead of the raw scE2G file directly. Gated on
+    scE2G_options.make_IGV_tracks exactly like scE2G's own `rule all` gates
+    the same files, since we don't reuse that rule."""
     if not config.get("scE2G_options", {}).get("make_IGV_tracks", False):
         return []
     files = []
@@ -76,11 +81,43 @@ def get_igv_track_files():
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, "ATAC_norm.bw"))
         for model in config["clusters"][dataset][cluster]["models"]:
             threshold = get_model_threshold(config["scE2G_dir"], model)
-            files.append(os.path.join(
-                RESULTS_DIR_BASE, dataset, cluster, model,
-                f"scE2G_predictions_threshold{threshold}.bedpe",
-            ))
+            bedpe_gz = os.path.join(
+                RESULTS_DIR_BASE, dataset, cluster,
+                f"{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.bedpe.gz",
+            )
+            files.append(bedpe_gz)
+            files.append(bedpe_gz + ".tbi")
     return files
+
+
+rule bgzip_index_bedpe:
+    """scE2G's own write_sc_e2g_predictions_bedpe rule (imported unmodified,
+    gated on make_IGV_tracks) only emits a plain, uncompressed, unindexed
+    .bedpe -- IGVF Portal submission requires a bgzipped, tabix-indexed file
+    (see Prediction Tabular Files' bedpe variant / BEDPE Index File in
+    igvf_metadata). Sorted by chrom/start first since tabix requires
+    coordinate-sorted input and scE2G's own bedpe output isn't guaranteed
+    pre-sorted. Uses RESULTS_DIR_BASE (dataset-agnostic) + explicit
+    {dataset}/{cluster} wildcards, not the bare RESULTS_DIR global -- see the
+    KNOWN LIMITATION comment in common.smk for why a bare RESULTS_DIR is
+    unsafe across multiple datasets in one run."""
+    input:
+        bedpe=os.path.join(
+            RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{model}",
+            "scE2G_predictions_threshold{threshold}.bedpe",
+        ),
+    output:
+        gz=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.bedpe.gz"),
+        tbi=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.bedpe.gz.tbi"),
+    conda:
+        "../envs/e2g_jamboree_env.yml"
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        sort -k1,1 -k2,2n {input.bedpe} | bgzip -c > {output.gz}
+        tabix -p bed {output.gz}
+        """
 
 
 rule aggregate_qc_stats:

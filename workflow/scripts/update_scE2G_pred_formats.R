@@ -61,24 +61,22 @@ pred <- fread(opt$input_file)
 # get all score columns (all columns except EG-pair defining columns)
 message("Reformatting predictions...")
 
-# set summarized sample description if specified
+# set cell annotation if specified
 if (!is.null(opt$summary)) {
-  pred$SampleSummaryShort <- opt$summary
+  pred$CellAnnotation <- opt$summary
 }
 
 # create header lines
 header <- c(
-  paste("# PRELIMINARY — NOT THE FINAL VERSION"),
-  paste("# Pending official cell type description (SampleSummaryShort)"),
   paste("# Source:", opt$method),
   paste("# Version:", opt$version),
   "# GenomeReference: IGVFDS0280IQAI",
   "# URL: https://github.com/EngreitzLab/scE2G/tree/main",
   "# Assays: 10x Multiome",
   "# SampleAgnostic: False",
-  paste("# SampleTermName:", unique(pred$CellType)),
+  paste("# SampleTermName:", opt$cell_type),
   paste("# SampleTermID:", opt$term_id),
-  paste("# SampleSummaryShort:", opt$summary)
+  paste("# CellAnnotation:", opt$summary)
 )
 
 # add threshold if applicable
@@ -92,8 +90,9 @@ if (!grepl("_list", opt$input_file)) {
 }
 
 # add link to where the metadata of the file is stored on the IGVF data portal if available
-if (!is.null(opt$portal_link)) {  
-    header <- c(header, "# Metadata:", opt$portal_link)
+# (opt$portal_link is the file's own IGVF alias; spelled out into a full portal URL here)
+if (!is.null(opt$portal_link)) {
+    header <- c(header, paste0("# Metadata: https://data.igvf.org/tabular-files/", opt$portal_link))
 }
 
 # add additional columns and extract output columns
@@ -143,7 +142,41 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
            GeneEnsemblID = Ensembl_ID,
            GeneStrand = strand) %>% 
     select(TSSChr, TSSStart, TSSEnd, GeneSymbol, GeneEnsemblID, GeneStrand, everything())
-} else if (grepl("ATAC", opt$method)) { # if the ATAC-only version was used
+} else if (grepl("ATAC", opt$method) & is.null(opt$threshold)) {
+  # scATAC unthresholded ("full") predictions -- wider column set (2026-07-23):
+  # every model-feature column gets a "feature." prefix, ABC.Score (scATAC's
+  # own final integrative score, in place of Multiome's ARC.E2G.Score -- ARC
+  # additionally integrates Kendall, which has no scATAC equivalent) is the
+  # last column in that prefixed block, and ElementName keeps the raw "name"
+  # column's own "class|chrN:start-end" value as-is rather than the narrower
+  # thresholded format's lossy chrN:start-end-only reconstruction below. Score
+  # sits right after CellAnnotation per the consortium-standard column order
+  # (2026-07-24) -- every remaining column is "[Optional columns]", kept in
+  # the same relative order as before, just moved after Score. RNA_pseudobulkTPM/
+  # RNA_meanLogNorm/RNA_percentCellsDetected are dropped (2026-07-24): those come
+  # from an RNA modality that scATAC-only runs don't have, and scE2G doesn't
+  # populate them here unless Multiome was also run for this cluster.
+  pred <- pred %>%
+    select(ElementChr = chr,
+           ElementStart = start,
+           ElementEnd = end,
+           ElementName = name,
+           ElementClass = class,
+           GeneSymbol = TargetGene,
+           GeneEnsemblID = TargetGeneEnsembl_ID,
+           GeneTSS = TargetGeneTSS,
+           CellAnnotation,
+           Score = E2G.Score.qnorm,
+           distance,
+           feature.normalizedATAC_prom = normalizedATAC_prom,
+           feature.numTSSEnhGene = numTSSEnhGene,
+           feature.numNearbyEnhancers = numNearbyEnhancers,
+           feature.ubiqExpressed = ubiqExpressed,
+           feature.numCandidateEnhGene = numCandidateEnhGene,
+           feature.ABC.Score = ABC.Score,
+           isSelfPromoter,
+           normalizedATAC_enh)
+} else if (grepl("ATAC", opt$method)) { # scATAC thresholded predictions -- unchanged narrow column set
     pred <- pred %>%
     mutate(ElementChr = chr,
           name = paste0(ElementChr, ":", start, "-", end)) %>%
@@ -155,10 +188,47 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
           GeneSymbol = TargetGene,
           GeneEnsemblID = TargetGeneEnsembl_ID,
           GeneTSS = TargetGeneTSS,
-          SampleSummaryShort,
+          CellAnnotation,
           Score = E2G.Score.qnorm,
           isSelfPromoter = isSelfPromoter)
-} else { # otherwise, assume these are scE2G_multiome pred and E2G.Score.qnorm.ignoreTPM is present # nolint
+} else if (is.null(opt$threshold)) {
+  # scE2G_multiome unthresholded ("full") predictions -- wider column set
+  # (2026-07-23): every model-feature column gets a "feature." prefix, ending
+  # in feature.ARC.E2G.Score (Multiome-only -- integrates ABC.Score and
+  # Kendall). ABC.Score is NOT a feature for Multiome (unlike scATAC, where
+  # it IS feature.-prefixed and sits last in the feature block in place of
+  # ARC.E2G.Score) -- kept unprefixed. Kendall (also Multiome-only) likewise
+  # stays unprefixed. ElementName keeps the raw "name" column's own
+  # "class|chrN:start-end" value as-is. Score sits right after CellAnnotation
+  # per the consortium-standard column order (2026-07-24) -- every remaining
+  # column is "[Optional columns]", kept in the same relative order as
+  # before, just moved after Score.
+  pred <- pred %>%
+    select(ElementChr = chr,
+          ElementStart = start,
+          ElementEnd = end,
+          ElementName = name,
+          ElementClass = class,
+          GeneSymbol = TargetGene,
+          GeneEnsemblID = TargetGeneEnsembl_ID,
+          GeneTSS = TargetGeneTSS,
+          CellAnnotation,
+          Score = E2G.Score.qnorm,
+          distance,
+          feature.normalizedATAC_prom = normalizedATAC_prom,
+          feature.numTSSEnhGene = numTSSEnhGene,
+          feature.numNearbyEnhancers = numNearbyEnhancers,
+          feature.ubiqExpressed = ubiqExpressed,
+          feature.numCandidateEnhGene = numCandidateEnhGene,
+          feature.ARC.E2G.Score = ARC.E2G.Score,
+          isSelfPromoter,
+          Kendall,
+          normalizedATAC_enh,
+          RNA_pseudobulkTPM,
+          RNA_meanLogNorm,
+          RNA_percentCellsDetected,
+          ABC.Score)
+} else { # scE2G_multiome thresholded predictions -- unchanged narrow column set
   pred <- pred %>%
     mutate(ElementChr = chr,
           name = paste0(ElementChr, ":", start, "-", end)) %>%
@@ -166,8 +236,7 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
           ElementStart = start, ElementEnd = end, ElementName = name,
           ElementClass = class, GeneSymbol = TargetGene,
           GeneEnsemblID = TargetGeneEnsembl_ID, GeneTSS = TargetGeneTSS,
-          SampleSummaryShort, Score = E2G.Score.qnorm,
-          Score.ignoreTPM = E2G.Score.qnorm.ignoreTPM,
+          CellAnnotation, Score = E2G.Score.qnorm,
           isSelfPromoter = isSelfPromoter)
 }
 

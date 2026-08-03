@@ -30,27 +30,32 @@ replaces an "invalid" validation failure with a correctly-labeled
 "deferred" outcome.
 
 full/elements/genes also need the ATAC fragment TabularFile / RNA count
-matrix MatrixFile tables (for derived_from) -- true stubs, routed through
-igvf_metadata.refs so there's exactly one place to fill in once those
-tables are designed.
+matrix MatrixFile tables (for derived_from) -- resolved, routed through
+igvf_metadata.refs (refs.atac_fragment_alias / refs.rna_matrix_alias),
+which delegate to the real filtered_atac_fragment_file / filtered_rna_count_matrix
+TableSpecs (see refs.py's own docstring).
 
-bedpe/elements/genes are required content (not optional) but the main scE2G
-pipeline doesn't yet emit them under a fixed, consortium-standard filename --
-their path builders raise NotImplementedError and enabled() reports False
-until that naming lands. Once it does: fill in the three path builders and
-they'll pick up the same file-existence-based enabled() that full/thresholded
-already use -- no other change needed.
-
-2026-07-20 update: the RAW scE2G output locations for elements/genes are now
-confirmed -- {cluster_dir}/{model}/scE2G_element_list.tsv.gz and
-{cluster_dir}/{model}/scE2G_gene_list.tsv.gz. That is NOT yet the
-consortium-standard submitted_file_name, though: a reformatting script still
-needs to be built and hooked into this pipeline first, and the user
-explicitly chose to leave _elements_path/_genes_path/_bedpe_path raising
-NotImplementedError until that script exists and emits a real filename,
-rather than enabling these rows against a placeholder path now. Keeping this
-note here so whoever wires in the reformatting script knows where its output
-should land relative to the raw file.
+bedpe/elements/genes path builders (2026-07-21 update): all three now resolve
+to real, already-produced pipeline outputs, and pick up the same
+file-existence-based enabled() that full/thresholded already use -- no other
+change needed.
+- elements/genes: reformat.smk's own reformat_lists rule (already in this
+  pipeline) reformats the raw {cluster_dir}/{model}/scE2G_{element,gene}_list.tsv.gz
+  scE2G output into the consortium-standard
+  {cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_{element,gene}_list.tsv.gz
+  -- there was no missing reformatting script after all, just a path builder
+  that hadn't been pointed at it yet. Same as scE2G's raw list output, this
+  is produced once per cluster regardless of which model triggered the row
+  (only ever from multiome_powerlaw_v3), matching this table's "elements
+  required for both families, genes Multiome-only" design.
+- bedpe: scE2G's own write_sc_e2g_predictions_bedpe rule only emits a plain,
+  uncompressed, unindexed .bedpe -- IGVF Portal submission requires
+  .bedpe.gz + .bedpe.gz.tbi. workflow/rules/qc_stats.smk's new
+  bgzip_index_bedpe rule (gated on make_IGV_tracks, same as the raw .bedpe
+  itself) produces
+  {cluster_dir}/{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.bedpe.gz;
+  BEDPE Index File's row (refs.bedpe_prediction_path(ctx) + ".tbi") follows
+  automatically.
 
 Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
 feedback) needs no code here -- enforced once, centrally, in
@@ -121,19 +126,19 @@ def _thresholded_path(ctx):
     return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_{ctx.model}_threshold{threshold}.e2g.tsv.gz")
 
 
-def _unresolved_path(kind):
-    def _fn(ctx):
-        raise NotImplementedError(
-            f"{kind} filename convention not finalized yet (main pipeline doesn't emit "
-            "consortium-standard names for this yet) -- fill in once available."
-        )
-
-    return _fn
+def _bedpe_path(ctx):
+    threshold = _score_threshold(ctx)
+    return os.path.join(
+        ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_{ctx.model}_threshold{threshold}.bedpe.gz",
+    )
 
 
-_bedpe_path = _unresolved_path("bedpe file")
-_elements_path = _unresolved_path("elements list")
-_genes_path = _unresolved_path("genes list")
+def _elements_path(ctx):
+    return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_multiome_v3_element_list.tsv.gz")
+
+
+def _genes_path(ctx):
+    return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_multiome_v3_gene_list.tsv.gz")
 
 
 def _existing_file_enabled(path_fn):

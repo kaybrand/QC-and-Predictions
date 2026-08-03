@@ -15,6 +15,16 @@ gtf: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_proc
 pseudobulks_root: /scratch/users/kaybrand/pseudobulk/igvf
 scE2G_version: "1.2"
 
+# Shared with manage_igvf_metadata.py (the IGVF metadata uploader) -- see
+# igvf_metadata/context.py's IgvfConfig for lab/award/alias_prefix/enabled_families
+# defaults, all overridable here. state_db_path points reformat.smk's own
+# SampleTermID/SampleSummaryShort sourcing (workflow/rules/reformat.smk) at the
+# same cell-metadata cache manage_igvf_metadata.py populates -- required once this
+# pipeline reformats any E2G prediction Tabular Files for IGVF Portal submission.
+igvf:
+  state_db_path: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks-igvf-portal-submission/resources/igvf_metadata_state.db
+
+
 # Passed through into scE2G's own config/config.yaml, identically for every dataset in
 # this run. Every key scE2G supports under its OPTIONS / REFERENCE FILES / WORKFLOW
 # PARAMS sections is reachable here (see scE2G_dir/config/config.yaml for the full
