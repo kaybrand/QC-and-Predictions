@@ -9,17 +9,13 @@ Tabular Files' full/elements rows, Signal Files' derived_from, ATAC Index
 File's derived_from) needed ("filtered_atac_fragment_file", "") added to
 their own depends_on once this table became real.
 
-derived_from has three parts, per the 2026-07-16 conversation:
-  1. contributing ATAC fragment files in primary pseudobulks -- TBD, exists
-     (or will exist) on the portal, computationally sourceable, mechanism
-     not yet defined (refs.primary_pseudobulk_atac_fragment_aliases, stub).
-  2. the annotation table -- TBD, same situation
-     (refs.annotation_table_alias, stub).
-  3. jesse-engreitz:{dataset}_{cluster}_filtered_barcode_list -- known,
+derived_from has two parts (2026-08-03: the annotation table dropped -- only
+primary pseudobulks point at it, not files derived from them):
+  1. contributing ATAC fragment files in primary pseudobulks
+     (refs.primary_pseudobulk_atac_fragment_aliases) -- one per subsample in
+     this cluster's QC-filtered barcode list, resolved 2026-08-03.
+  2. jesse-engreitz:{dataset}_{cluster}_filtered_barcode_list -- known,
      references the real filtered_barcode_list table directly.
-Because (1) and (2) raise, this table's own rows never reach 'uploaded'
-until those lookup mechanisms are built -- which correctly keeps every
-downstream table (everything depends_on-ing this one) deferred too.
 
 analysis_step_version reuses the same resolved reference as ATAC Index File
 (refs.qc_guide_to_atac_fragment_analysis_step_version_alias, resolved
@@ -72,7 +68,6 @@ def _enabled(ctx):
 def _row(ctx):
     derived_from_parts = [
         *refs.primary_pseudobulk_atac_fragment_aliases(ctx),
-        refs.annotation_table_alias(ctx),
         registry.get("filtered_barcode_list").build_alias(ctx, ""),
     ]
     return {

@@ -40,9 +40,19 @@ qc_thresholds_document_alias() is confirmed and deterministic (used by
 both Principal Pseudobulk Set's and Filtered Barcode Lists' `documents`) --
 scope="cluster", not cluster_model, same as Principal Pseudobulk Set.
 
-per_cell_quality_report_aliases() is still a true stub -- Filtered Barcode
-Lists' derived_from (the per-cluster per-cell QC metric files, content_type
-"per-cell quality report") has no formula yet.
+per_cell_quality_report_aliases() / primary_pseudobulk_atac_fragment_aliases() /
+primary_pseudobulk_h5ad_aliases() (2026-08-03): resolved, per-subsample, in
+the same "anshul-kundaje:{dataset}-{cluster}-{subsample}"-based namespace as
+principal_pseudobulk_set.py's _primary_pseudobulk_aliases, just with a
+"-per_cell_qc_tsv"/"-fragments_tsv_gz"/"-rna_counts_mtx_h5ad" suffix naming
+which file within that primary pseudobulk.
+
+annotation_table_alias() removed (2026-08-03): the annotation table is only
+referenced by primary pseudobulks (Anshul Kundaje's lab, upstream of this
+pipeline) -- Filtered ATAC Fragment Files' and Filtered Matrix Files' own
+derived_from never pointed at it, so their two remaining parts (the primary
+pseudobulk file aliases above + the filtered_barcode_list alias) are
+sufficient.
 
 plotting_analysis_step_version_alias() (2026-07-29): resolved to the real
 portal analysis step version /analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/
@@ -56,12 +66,17 @@ functions (one per calling table's own semantics: ATAC fragment/index vs.
 RNA matrix workflow) even though the value happens to coincide today.
 """
 
-from . import registry
+from . import registry, subsamples
 from .context import make_alias
 
 # Shared by qc_guide_to_atac_fragment_analysis_step_version_alias and
 # qc_guide_to_rna_matrix_analysis_step_version_alias -- see module docstring.
 _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/"
+
+# A different lab's (Anshul Kundaje's) namespace, not ours -- same constant as
+# tables/principal_pseudobulk_set.py's _KUNDAJE_ALIAS_PREFIX, duplicated here
+# rather than imported to avoid a refs<->tables circular import.
+_KUNDAJE_ALIAS_PREFIX = "anshul-kundaje"
 
 
 def prediction_set_alias(ctx):
@@ -123,11 +138,12 @@ def qc_thresholds_document_alias(ctx):
 
 
 def per_cell_quality_report_aliases(ctx):
-    raise NotImplementedError(
-        "Filtered Barcode Lists' derived_from names the per-cluster per-cell QC metric "
-        "files (content_type 'per-cell quality report' in the pseudobulks) with no alias "
-        "formula given yet -- fill in here once it is."
-    )
+    """One per contributing subsample's primary pseudobulk -- for Filtered
+    Barcode Lists' derived_from."""
+    return [
+        f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-per_cell_qc_tsv"
+        for s in subsamples.unique_subsamples(ctx)
+    ]
 
 
 def plotting_analysis_step_version_alias(ctx):
@@ -138,31 +154,18 @@ def qc_guide_to_atac_fragment_analysis_step_version_alias(ctx):
     return _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION
 
 
-def annotation_table_alias(ctx):
-    """Confirmed TBD: the annotation table's alias exists (or will exist)
-    on the portal and can be computationally sourced -- but the mechanism
-    isn't defined yet. Needed for Filtered ATAC Fragment Files'
-    derived_from."""
-    raise NotImplementedError(
-        "Filtered ATAC Fragment Files' derived_from names 'the annotation table' -- "
-        "confirmed to exist on the portal and be computationally sourceable, but no "
-        "lookup mechanism/formula given yet."
-    )
-
-
 def primary_pseudobulk_atac_fragment_aliases(ctx):
-    """Confirmed TBD: the ATAC fragment FILE aliases *within* each
-    contributing primary pseudobulk (distinct from the pseudobulk SET
-    alias itself, which IS known -- see
+    """The ATAC fragment FILE aliases *within* each contributing primary
+    pseudobulk (distinct from the pseudobulk SET alias itself -- see
     tables/principal_pseudobulk_set.py's _primary_pseudobulk_aliases,
-    "anshul-kundaje:{dataset}-{cluster}-{subsample}"). Also confirmed
-    computationally sourceable, mechanism not defined yet. Needed for
-    Filtered ATAC Fragment Files' derived_from."""
-    raise NotImplementedError(
-        "Filtered ATAC Fragment Files' derived_from names 'contributing ATAC fragment "
-        "files in primary pseudobulks' -- confirmed to exist on the portal and be "
-        "computationally sourceable, but no lookup mechanism/formula given yet."
-    )
+    "anshul-kundaje:{dataset}-{cluster}-{subsample}"). One per subsample in
+    the cluster's QC-filtered barcode list (cluster_cfg["qc_guide"]) -- NOT
+    every subsample queryable on the portal. Needed for Filtered ATAC
+    Fragment Files' derived_from."""
+    return [
+        f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-fragments_tsv_gz"
+        for s in subsamples.unique_subsamples(ctx)
+    ]
 
 
 def qc_guide_to_rna_matrix_analysis_step_version_alias(ctx):
@@ -173,11 +176,10 @@ def primary_pseudobulk_h5ad_aliases(ctx):
     """Same situation as primary_pseudobulk_atac_fragment_aliases, but for
     the h5ad files within each contributing primary pseudobulk -- needed
     for Filtered Matrix Files' derived_from."""
-    raise NotImplementedError(
-        "Filtered Matrix Files' derived_from names 'contributing h5ads in primary "
-        "pseudobulks' -- confirmed to exist on the portal and be computationally "
-        "sourceable, but no lookup mechanism/formula given yet."
-    )
+    return [
+        f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-rna_counts_mtx_h5ad"
+        for s in subsamples.unique_subsamples(ctx)
+    ]
 
 
 def rna_matrix_file_format_specifications_alias(ctx):

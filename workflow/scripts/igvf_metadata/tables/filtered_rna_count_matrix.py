@@ -9,12 +9,13 @@ Tabular Files' full (Multiome-only) and genes rows) needed
 ("filtered_rna_count_matrix", "") added to their own depends_on once this
 table became real.
 
-derived_from mirrors Filtered ATAC Fragment Files' three-part shape:
-  1. contributing h5ads in primary pseudobulks -- TBD, computationally
-     sourceable, mechanism not yet defined (refs.primary_pseudobulk_h5ad_aliases).
-  2. the annotation table -- TBD, same stub Filtered ATAC Fragment Files
-     uses (refs.annotation_table_alias).
-  3. jesse-engreitz:{dataset}_{cluster}_filtered_barcode_list -- known,
+derived_from mirrors Filtered ATAC Fragment Files' two-part shape
+(2026-08-03: the annotation table dropped -- only primary pseudobulks point
+at it, not files derived from them):
+  1. contributing h5ads in primary pseudobulks
+     (refs.primary_pseudobulk_h5ad_aliases) -- one per subsample in this
+     cluster's QC-filtered barcode list, resolved 2026-08-03.
+  2. jesse-engreitz:{dataset}_{cluster}_filtered_barcode_list -- known,
      references the real filtered_barcode_list table directly.
 
 file_format_specifications (refs.rna_matrix_file_format_specifications_alias,
@@ -66,7 +67,6 @@ def _enabled(ctx):
 def _row(ctx):
     derived_from_parts = [
         *refs.primary_pseudobulk_h5ad_aliases(ctx),
-        refs.annotation_table_alias(ctx),
         registry.get("filtered_barcode_list").build_alias(ctx, ""),
     ]
     return {

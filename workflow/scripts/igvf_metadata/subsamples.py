@@ -7,8 +7,11 @@ built from this should do that mapping themselves.
 
 Column is "subsample" (singular) -- confirmed against real QC guide files
 (e.g. igvf2's), which also have a third column, "analysis_accession", not
-yet used anywhere in this package but worth checking against the still-open
-primary_pseudobulk_*_aliases/annotation_table_alias stubs in refs.py.
+used anywhere in this package. unique_subsamples() is also the source
+refs.py's primary_pseudobulk_*_aliases functions use, per the 2026-08-03
+instruction that any per-subsample derived_from/input_file_sets wildcard
+must be scoped to subsamples in the QC-filtered barcode list, not every
+subsample queryable on the portal.
 """
 
 import csv
