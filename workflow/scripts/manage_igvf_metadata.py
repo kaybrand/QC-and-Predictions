@@ -92,6 +92,7 @@ def main():
         all_cluster_configs=all_cluster_configs,
         igvf_cfg=igvf_cfg,
         scE2G_dir=config["scE2G_dir"],
+        data_dir=config["data_dir"],
         state_db_path=args.state_db,
         manifest_dir=args.manifest_dir,
         mode=args.mode,

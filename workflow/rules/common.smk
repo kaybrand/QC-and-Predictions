@@ -17,10 +17,15 @@ import sys
 
 import yaml
 
-# Repo root (the directory containing this repo's Snakefile/plots/datatables/...),
+# Repo root (the directory containing this repo's own Snakefile/workflow/...),
 # derived from the location of the top-level workflow/Snakefile rather than the
-# current working directory, so `plots/` and `datatables/` resolve correctly
-# regardless of where `snakemake` is invoked from.
+# current working directory. Code directory only -- for the pipeline's own
+# reference/ files etc. NEVER for datafiles (plots/, datatables/,
+# multiome_data/): the code checkout and the data location are independent,
+# since a worktree checks the same code out at a different path than wherever
+# the data actually lives. Datafile roots come from config["data_dir"] instead
+# (see multiome_data_dir/resolve_exclusions below) -- a self-consistent path
+# the user sets once, in the pipeline config.
 WDIR = os.path.dirname(workflow.basedir)
 
 sys.path.insert(0, os.path.join(workflow.basedir, "scripts"))
@@ -104,7 +109,7 @@ def build_scE2G_config(config, scE2G_dir, cell_clusters_table, results_dir):
 
 
 def multiome_data_dir(dataset):
-    return os.path.join(WDIR, "multiome_data", dataset)
+    return os.path.join(config["data_dir"], "multiome_data", dataset)
 
 
 def pseudobulks_dir(dataset):
@@ -115,7 +120,7 @@ def pseudobulks_dir(dataset):
 # Exclusion resolution -- runs once at parse time, before any rule is defined.
 # Every set below is keyed by (dataset, cluster) tuples.
 # ---------------------------------------------------------------------------
-INCLUDED_CLUSTERS, UPLOAD_ELIGIBLE_CLUSTERS, EXCLUDED_CLUSTERS, CLUSTER_STATS = resolve_exclusions(config, WDIR)
+INCLUDED_CLUSTERS, UPLOAD_ELIGIBLE_CLUSTERS, EXCLUDED_CLUSTERS, CLUSTER_STATS = resolve_exclusions(config, config["data_dir"])
 
 if EXCLUDED_CLUSTERS:
     print(f"[QC-and-Predictions] Excluding clusters this run: {sorted(EXCLUDED_CLUSTERS)}")

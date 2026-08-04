@@ -198,7 +198,7 @@ def _local_subsamples(cluster_keys, cluster_configs):
     by picking the most-contributing subsample's own values."""
     by_scope = {}
     for dataset, cluster in cluster_keys:
-        ctx = Context(dataset, cluster, None, cluster_configs[(dataset, cluster)], None, None)
+        ctx = Context(dataset, cluster, None, cluster_configs[(dataset, cluster)], None, None, None)
         by_scope[(dataset, cluster)] = subsamples.subsamples_by_frequency(ctx)
     return by_scope
 

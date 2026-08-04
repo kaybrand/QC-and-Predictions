@@ -19,13 +19,15 @@ dict values, matching iu_register.py's own requirement that an
 object-typed TSV field be valid JSON.
 
 Confirmed 2026-07-16: attachment path is
-"{QC_PSEUDOBULKS_PLOTS_DIR}/{dataset}/{cluster}/qc_thresholds.tsv".
+"{data_dir}/plots/{dataset}/{cluster}/qc_thresholds.tsv" (config["data_dir"],
+via ctx.data_dir).
 
-Corrected 2026-08-03: QC_PSEUDOBULKS_PLOTS_DIR is the `main`-branch
-QC_pseudobulks worktree's plots/ dir (a sibling worktree of this repo, per
-`git worktree list` -- NOT a separate "QC_clusters" project, which doesn't
-exist anywhere on disk). The constant was previously misnamed
-QC_CLUSTERS_PLOTS_DIR and pointed at a nonexistent path, silently disabling
+Corrected 2026-08-03: code directory (where this pipeline happens to be
+checked out) and data directory (where plots/datatables/multiome_data
+actually live) are independent -- ctx.data_dir is a self-consistent path the
+user sets once, in the pipeline config, same as pseudobulks_root. This used
+to be a hardcoded "QC_clusters" path that didn't exist anywhere on disk
+(should have been the sibling QC_pseudobulks worktree), silently disabling
 this table (and everything depends_on-ing it) for every dataset, not just
 one -- caught when a dry run for igvf4 showed zero QC_documents rows ever
 enabled despite qc_thresholds.tsv actually existing on disk.
@@ -41,17 +43,9 @@ submittable field for Document objects.
 import os
 
 from .. import registry
-from ..context import QC_PSEUDOBULKS_WDIR, make_alias
+from ..context import make_alias
 
 TABLE_NAME = "QC_documents"
-
-# The `main`-branch QC_pseudobulks worktree's plots/ dir -- a sibling
-# worktree of this repo (this repo is the igvf-portal-submission worktree),
-# NOT this checkout's own plots/ dir. Derived from context.QC_PSEUDOBULKS_WDIR
-# (the one place that worktree's root is defined) rather than its own literal,
-# so there's exactly one path to change if that worktree ever moves --
-# same reasoning as context.py's own multiome_data_cluster_dir.
-QC_PSEUDOBULKS_PLOTS_DIR = os.path.join(QC_PSEUDOBULKS_WDIR, "plots")
 
 
 def build_alias(ctx, variant_name):
@@ -59,7 +53,7 @@ def build_alias(ctx, variant_name):
 
 
 def _attachment_path(ctx):
-    return os.path.join(QC_PSEUDOBULKS_PLOTS_DIR, ctx.dataset, ctx.cluster, "qc_thresholds.tsv")
+    return os.path.join(ctx.data_dir, "plots", ctx.dataset, ctx.cluster, "qc_thresholds.tsv")
 
 
 def _enabled(ctx):

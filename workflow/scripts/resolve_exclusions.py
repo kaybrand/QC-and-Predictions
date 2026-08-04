@@ -102,7 +102,7 @@ def _parse_qualified_names(qualified_names):
     return parsed
 
 
-def resolve_exclusions(config, wdir):
+def resolve_exclusions(config, data_dir):
     """
     Returns (included_clusters, upload_eligible_clusters, excluded_clusters, stats_by_cluster),
     all keyed by (dataset, cluster) tuples.
@@ -110,9 +110,14 @@ def resolve_exclusions(config, wdir):
     included_clusters:        (dataset, cluster) pairs this run will actually process (filter/scE2G/etc)
     upload_eligible_clusters: subset of included_clusters whose products may be uploaded
     excluded_clusters:        (dataset, cluster) pairs this run will skip entirely (unless process_excluded_no_upload)
+
+    data_dir: config["data_dir"] -- corrected 2026-08-03, this used to be the
+    pipeline's own code-checkout root (WDIR), which only found real
+    plots/datatables when the code and the data happened to live in the same
+    place.
     """
-    plots_dir = os.path.join(wdir, "plots")
-    datatables_dir = os.path.join(wdir, "datatables")
+    plots_dir = os.path.join(data_dir, "plots")
+    datatables_dir = os.path.join(data_dir, "datatables")
 
     exclusion_cfg = config.get("exclusion", {})
     user_specified = _parse_qualified_names(exclusion_cfg.get("user_specified", []))

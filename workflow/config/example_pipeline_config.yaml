@@ -7,6 +7,18 @@
 
 scE2G_dir: /oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G
 gtf: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz
+# The datafile root: {data_dir}/multiome_data, {data_dir}/plots, {data_dir}/datatables --
+# every input/output datafile this pipeline reads or writes (filtered ATAC/RNA/index
+# files, QC-guide/QC-threshold plots, per-cell-QC datatables), all rooted here. Set once,
+# independently of wherever this pipeline's own code happens to be checked out (WDIR) --
+# a worktree/branch checkout of this repo's code is not the same thing as the data
+# location, and code-directory-relative datafile paths silently break the moment those
+# two diverge (see common.smk/resolve_exclusions.py/igvf_metadata/context.py's own
+# docstrings, 2026-08-03). IGVF metadata upload artifacts (resources/igvf_metadata_state.db,
+# manifest TSVs) are NOT datafiles in this sense -- they're upload-support state for the
+# Portal destination, not Synapse-focused pipeline data, so they stay WDIR-relative /
+# independently configured (see igvf.state_db_path below) rather than living under data_dir.
+data_dir: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks
 # pseudobulks_dir for a given dataset = {pseudobulks_root}/{dataset}/pseudobulks -- always
 # the archive-extracted root (one-time-per-dataset sbatch job, per the
 # qc-filter-pseudobulks skill), even for igvf0/igvf1: the sbaek1 pseudobulk directory

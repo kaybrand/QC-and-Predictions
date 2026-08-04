@@ -99,7 +99,7 @@ def _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
             yield dataset, cluster, model, cluster_cfg
 
 
-def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir):
+def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir):
     """Returns (to_post, to_patch, counts).
     to_post:  list of (state_row_id, item_alias, payload)
     to_patch: list of (state_row_id, item_alias, payload, record_id)
@@ -111,7 +111,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
         counts[key] = counts.get(key, 0) + 1
 
     for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
-        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, conn=conn)
+        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, conn=conn)
         model_key = model or ""
         for variant in table.variants:
             # enabled() can do real I/O (e.g. prediction_tabular_files' score-threshold
@@ -189,6 +189,7 @@ def run(
     cluster_configs,
     igvf_cfg,
     scE2G_dir,
+    data_dir,
     state_db_path,
     manifest_dir,
     mode="preview",
@@ -238,7 +239,9 @@ def run(
     tables = [t for t in registry.all_specs() if table_names is None or t.name in table_names]
     report = {}
     for table in tables:
-        to_post, to_patch, counts = plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir)
+        to_post, to_patch, counts = plan_table(
+            conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir
+        )
 
         post_path = os.path.join(manifest_dir, f"{table.name}_post.tsv")
         patch_path = os.path.join(manifest_dir, f"{table.name}_patch.tsv")

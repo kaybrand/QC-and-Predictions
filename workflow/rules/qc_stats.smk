@@ -125,7 +125,7 @@ rule aggregate_qc_stats:
         this_run_stats=lambda wildcards: per_cluster_stats_files(wildcards.dataset),
     params:
         dataset_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}"),
-        plots_dir=os.path.join(WDIR, "plots", "{dataset}"),
+        plots_dir=os.path.join(config["data_dir"], "plots", "{dataset}"),
     output:
         all_stats=os.path.join(QC_PLOTS_DIR, "all_qc_stats.tsv"),
     conda:

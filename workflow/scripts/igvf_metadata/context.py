@@ -9,21 +9,6 @@ import os
 from dataclasses import dataclass, field
 from typing import Optional
 
-# This repo's own root -- mirrors workflow/rules/common.smk's
-# `WDIR = os.path.dirname(workflow.basedir)`, computed the equivalent way
-# since this package has no access to Snakemake's `workflow` object.
-WDIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-
-# The `main`-branch QC_pseudobulks worktree's own root -- a sibling worktree
-# of this repo (this repo is the igvf-portal-submission worktree), per `git
-# worktree list`. multiome_data_cluster_dir below reads already-filtered
-# ATAC/RNA data from there, same "read pre-existing artifacts from the
-# main-branch worktree" pattern as tables/qc_documents.py's
-# QC_PSEUDOBULKS_PLOTS_DIR (fixed 2026-08-03 after the same class of bug:
-# this used to be `WDIR`-relative, silently finding nothing since this
-# worktree has no multiome_data/ dir of its own).
-QC_PSEUDOBULKS_WDIR = "/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks"
-
 
 @dataclass(frozen=True)
 class IgvfConfig:
@@ -63,6 +48,7 @@ class Context:
     cluster_cfg: dict  # config["clusters"][dataset][cluster]: models, pseudobulk_annotation, qc_guide
     igvf: IgvfConfig
     scE2G_dir: str
+    data_dir: str  # config["data_dir"] -- see multiome_data_cluster_dir below
     cache: dict = field(default_factory=dict)  # per-run memoization (e.g. score thresholds, one lookup per model)
     conn: Optional[object] = None  # state.db connection -- cell_metadata.get_metadata_for's cache lookup needs it
 
@@ -77,26 +63,28 @@ class Context:
     @property
     def multiome_data_cluster_dir(self):
         """The Synapse-side filtered_data location, NOT scE2G's own results
-        dir. Corrected 2026-08-03: reads from QC_PSEUDOBULKS_WDIR (the
-        main-branch QC_pseudobulks worktree), not this worktree's own WDIR --
-        this worktree has no multiome_data/ dir of its own; the real
-        already-filtered ATAC/RNA data for existing clusters lives in the
-        main-branch worktree (produced by that repo's legacy manual filtering
-        before this Snakemake pipeline existed).
-
-        NOTE this now DIVERGES from workflow/rules/common.smk's own
-        multiome_data_dir(dataset), which is still WDIR-relative (this
-        worktree) -- that's what filter_pseudobulks.smk's rules actually
-        write fresh output to. So a cluster with no pre-existing legacy data
-        that gets filtered for the first time by THIS pipeline's own Snakemake
-        rules would land in a different directory than this property looks
-        in. Flagged, not resolved -- unifying the two (or teaching this
-        property to check both locations) is unresolved follow-up."""
-        return os.path.join(QC_PSEUDOBULKS_WDIR, "multiome_data", self.dataset, self.cluster)
+        dir. Corrected 2026-08-03: code directory (WDIR, where this pipeline
+        happens to be checked out) and data directory (where filtered
+        ATAC/RNA/index datafiles actually live) are independent -- the code
+        directory is fixed by which worktree you're running from, but the
+        data directory is a self-consistent path the user sets once, in the
+        pipeline config (config["data_dir"]), same as pseudobulks_root.
+        Mirrors workflow/rules/common.smk's own multiome_data_dir(dataset),
+        which reads the same config value -- both now agree by construction,
+        not by coincidence of which worktree the data happens to sit in."""
+        return os.path.join(self.data_dir, "multiome_data", self.dataset, self.cluster)
 
     def with_model(self, model):
         return Context(
-            self.dataset, self.cluster, model, self.cluster_cfg, self.igvf, self.scE2G_dir, self.cache, self.conn
+            self.dataset,
+            self.cluster,
+            model,
+            self.cluster_cfg,
+            self.igvf,
+            self.scE2G_dir,
+            self.data_dir,
+            self.cache,
+            self.conn,
         )
 
 
