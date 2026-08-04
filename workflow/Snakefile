@@ -46,4 +46,5 @@ rule all:
         get_manifest_targets(),
         get_qc_stats_targets(),
         get_igv_track_files(),
+        get_rna_matrix_packages(),
     default_target: True

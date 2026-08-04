@@ -91,3 +91,53 @@ rule rna_count_matrix:
             --standard-chromosomes-only \
             --log         {log}
         """
+
+
+rule package_rna_count_matrix:
+    """IGVF Portal packaging for the RNA count matrix -- Filtered Matrix
+    Files' own file format spec (QC_pseudobulks/FILE_SPEC_RNA_COUNT_MATRIX.txt)
+    requires a tar.gz of DEcompressed matrix.mtx/barcodes.tsv/features.tsv,
+    flat (no subdirectory nesting inside the archive) -- distinct from the
+    gzipped-individually directory rule rna_count_matrix produces above,
+    which is untouched here and remains scE2G's own input (referenced
+    directly by the cell_clusters table write_scE2G_config.py writes;
+    scE2G needs the untarred, per-file-gzipped form, never this tarball).
+
+    No Snakemake rule downstream of this one consumes its output -- unlike
+    atac_fragment_file/rna_count_matrix, which get pulled into the DAG
+    transitively via scE2G's own inputs, this tarball exists only for the
+    IGVF metadata uploader (igvf_metadata.tables.filtered_rna_count_matrix)
+    to find on disk, so it needs its own explicit target
+    (get_rna_matrix_packages(), wired into rule all in the top-level
+    Snakefile).
+    """
+    input:
+        matrix=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "matrix.mtx.gz"),
+        barcodes=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "barcodes.tsv.gz"),
+        features=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "features.tsv.gz"),
+    output:
+        tarball=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}.tar.gz"),
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        tmp={resources.tmpdir}/rna_count_matrix_{wildcards.dataset}_{wildcards.cluster}
+        mkdir -p "$tmp"
+        zcat {input.matrix}    > "$tmp/matrix.mtx"
+        zcat {input.barcodes}  > "$tmp/barcodes.tsv"
+        zcat {input.features}  > "$tmp/features.tsv"
+        tar -czf {output.tarball} -C "$tmp" matrix.mtx barcodes.tsv features.tsv
+        rm -rf "$tmp"
+        """
+
+
+def get_rna_matrix_packages():
+    """Tarball targets for every upload-eligible cluster with RNA data --
+    excluded clusters (unless process_excluded_no_upload) never get
+    distribution-format outputs, same reasoning as
+    reformat.smk's get_reformat_output_files()."""
+    return [
+        os.path.join(OUT_DIR_BASE, dataset, cluster, f"rna_count_matrix_{dataset}_{cluster}.tar.gz")
+        for dataset, cluster in UPLOAD_ELIGIBLE_CLUSTERS
+        if config["clusters"][dataset][cluster]["models"] != ["scATAC_powerlaw_v3"]
+    ]
