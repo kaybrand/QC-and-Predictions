@@ -131,7 +131,17 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
 
             deferred_on = None
             for dep_table_name, dep_variant in variant.depends_on(ctx):
-                dep = state.get_upload(conn, dataset, cluster, model_key, dep_table_name, dep_variant)
+                # The dependency's OWN scope decides its model_key, not this
+                # variant's -- a cluster_model-scoped table (e.g. prediction_set)
+                # depending on a cluster-scoped one (e.g. principal_pseudobulk_set)
+                # must look that row up under model="" (how it was actually
+                # stored), never under this variant's real model name, or the
+                # lookup silently never matches (confirmed 2026-08-05: this
+                # blocked prediction_set/signal_files/prediction_tabular_files
+                # forever, even after their cluster-scoped dependency was
+                # genuinely uploaded).
+                dep_model_key = model_key if registry.get(dep_table_name).scope == "cluster_model" else ""
+                dep = state.get_upload(conn, dataset, cluster, dep_model_key, dep_table_name, dep_variant)
                 if not dep or dep["status"] != "uploaded":
                     deferred_on = f"{dep_table_name}/{dep_variant or '(default)'}"
                     break
