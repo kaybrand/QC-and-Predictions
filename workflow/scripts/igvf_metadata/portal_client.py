@@ -18,6 +18,19 @@ Confirmed by reading that script and igvf_utils/connection.py directly
     column in the input file (RECORD_ID_FIELD below), which iu_register.py
     itself translates to IGVFID_KEY internally -- our TSV writer must use
     "record_id", not "_igvf_id".
+  - iu_register.py's own TSV reader (create_payloads_from_tsv) parses each
+    line with a plain `line.split("\t")` -- no csv module, no quote/escape
+    handling at all -- then calls json.loads directly on the raw field text
+    for object/array-of-object fields. write_tsv below must therefore never
+    csv-quote a field: Python's csv.writer's default QUOTE_MINIMAL wraps any
+    field containing a `"` (every JSON-dumped dict/list value) in an outer
+    quote pair and doubles internal quotes, which iu_register.py never
+    unescapes -- json.loads then fails immediately on the literal leading
+    `"` (confirmed 2026-08-05: a real --mode upload attempt failed with
+    "Extra data: line 1 column 4", i.e. json.loads successfully parsed the
+    3-character string `"{"` from `"{""path""...` and choked on what
+    followed). Plain str.join, no quoting, is correct here precisely because
+    none of our field values ever contain a literal tab.
   - It POSTs/PATCHes rows in a single Python loop with no per-row
     try/except beyond a JSONDecodeError check -- an error partway through
     one file can abort the remaining rows in that file. Callers of
@@ -30,7 +43,6 @@ Connection.search() can't be reused for this, it hardcodes "search/" as
 the path.
 """
 
-import csv
 import json
 import os
 import subprocess
@@ -127,14 +139,15 @@ def write_tsv(path, rows, record_ids=None):
     dirname = os.path.dirname(path)
     if dirname:
         os.makedirs(dirname, exist_ok=True)
+    # Plain str.join, NOT csv.writer -- see module docstring for why
+    # csv-quoting corrupts iu_register.py's own naive line.split("\t") parse.
     with open(path, "w", newline="") as f:
-        writer = csv.writer(f, delimiter="\t")
-        writer.writerow(columns)
+        f.write("\t".join(columns) + "\n")
         for i, row in enumerate(rows):
             values = dict(row)
             if record_ids is not None:
                 values[RECORD_ID_FIELD] = record_ids[i]
-            writer.writerow([_tsv_cell(values.get(c)) for c in columns])
+            f.write("\t".join(_tsv_cell(values.get(c)) for c in columns) + "\n")
     return path
 
 
