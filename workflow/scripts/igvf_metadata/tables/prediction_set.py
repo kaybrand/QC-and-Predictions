@@ -3,11 +3,16 @@ output for one (dataset, cluster, model) on the IGVF Data Portal. Every
 other table's file_set points at this table's alias; see
 igvf_metadata.refs.prediction_set_alias, which delegates here.
 
-input_file_sets/derived_from are both fully resolved: exactly
-[trained_model_set_alias, principal_pseudobulk_set_alias]. _row() itself no
-longer raises -- but depends_on lists ("principal_pseudobulk_set", "") so
-real uploads still correctly wait for that object to actually exist on the
-portal before this one links to it.
+input_file_sets is fully resolved: exactly [trained_model_set_alias,
+principal_pseudobulk_set_alias]. _row() itself no longer raises -- but
+depends_on lists ("principal_pseudobulk_set", "") so real uploads still
+correctly wait for that object to actually exist on the portal before this
+one links to it.
+
+No derived_from field: the Prediction Set profile doesn't have one at all
+(confirmed 2026-08-05) -- it was previously duplicated here as a
+pre-joined-string copy of input_file_sets, which was both invalid (not a
+real property on this schema) and redundant even if it had been.
 
 Resolved 2026-07-20: samples' raw "subsample" column values (e.g.
 "IGVFSM6456LUAO") ARE literal portal Sample accessions already -- on the
@@ -39,16 +44,11 @@ def build_alias(ctx, variant_name):
 
 
 def _row(ctx):
-    # derived_from: same two Sets as input_file_sets, but as a pre-joined
-    # no-spaces comma string, matching every other derived_from field in
-    # this package (not a Python list left for the TSV writer to join).
-    derived_from_parts = [refs.trained_model_set_alias(ctx), refs.principal_pseudobulk_set_alias(ctx)]
     return {
         "input_file_sets": [
-            refs.trained_model_set_alias(ctx),  # the model Set, not the FILE derived_from uses
+            refs.trained_model_set_alias(ctx),  # the model Set, not the FILE derived_from-shaped fields use
             refs.principal_pseudobulk_set_alias(ctx),  # itself contains the RNA/ATAC files, "and more"
         ],
-        "derived_from": ",".join(derived_from_parts),
         "documents": [make_alias(ctx.igvf, "E2G_prediction_set_files")],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
         "samples": subsamples.subsamples_by_frequency(ctx),  # raw values ARE Sample accessions already -- see module docstring
