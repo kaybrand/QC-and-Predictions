@@ -169,7 +169,10 @@ def _full_row(ctx):
         "file_format": "tsv",
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
-        "file_format_specifications": [make_alias(ctx.igvf, "E2G_prediction_file_format")],
+        "file_format_specifications": [
+            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
+            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
+        ],
         "submitted_file_name": _full_path(ctx),
     }
 
@@ -180,7 +183,10 @@ def _thresholded_row(ctx):
         "file_format": "tsv",
         "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
-        "file_format_specifications": [make_alias(ctx.igvf, "E2G_prediction_file_format")],
+        "file_format_specifications": [
+            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
+            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
+        ],
         "submitted_file_name": _thresholded_path(ctx),
     }
 
@@ -205,7 +211,10 @@ def _elements_row(ctx):
         "file_format": "tsv",
         "description": f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": refs.atac_fragment_alias(ctx),
-        "file_format_specifications": [make_alias(ctx.igvf, "E2G_element_list_format")],
+        "file_format_specifications": [
+            make_alias(ctx.igvf, "elements_reference_file_format_specification_pdf"),
+            make_alias(ctx.igvf, "elements_reference_file_format_specification_md"),
+        ],
         "submitted_file_name": _elements_path(ctx),
     }
 
@@ -216,7 +225,10 @@ def _genes_row(ctx):
         "file_format": "tsv",
         "description": f"Annotated genes in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": refs.rna_matrix_alias(ctx),
-        "file_format_specifications": [make_alias(ctx.igvf, "E2G_gene_list_format")],
+        "file_format_specifications": [
+            make_alias(ctx.igvf, "gene_quantifications_file_format_specification_pdf"),
+            make_alias(ctx.igvf, "gene_quantifications_file_format_specification_md"),
+        ],
         "submitted_file_name": _genes_path(ctx),
     }
 
