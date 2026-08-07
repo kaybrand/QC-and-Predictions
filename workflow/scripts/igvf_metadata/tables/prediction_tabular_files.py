@@ -61,6 +61,13 @@ Family-gating ("only Multiome unless scATAC is configured," 2026-07-20
 feedback) needs no code here -- enforced once, centrally, in
 orchestrator._iter_scopes via IgvfConfig.enabled_families, shared by every
 scope="cluster_model" table.
+
+reference_files (added 2026-08-06): confirmed via a live upload test against
+the real portal to resolve an upload error on this object type. Fixed,
+content_type-keyed accessions -- not derived per-row -- so every
+"element to gene interactions"/"elements reference" row (full, thresholded,
+bedpe, elements) gets the same 3, and every "gene quantifications" row
+(genes) gets the 1 that applies to it.
 """
 
 import glob
@@ -71,6 +78,9 @@ from .. import refs, registry
 from ..context import make_alias
 
 TABLE_NAME = "prediction_tabular_files"
+
+_REFERENCE_FILES_ELEMENT_TO_GENE = ["IGVFFI7969JLFC", "IGVFFI0653VCGH", "IGVFFI9573KOZR"]
+_REFERENCE_FILES_GENE_QUANTIFICATIONS = ["IGVFFI9573KOZR"]
 
 # Extend as new models are added -- deliberately a lookup, not a string
 # transform, since "multiome_powerlaw_v3" -> "Multiome" but "scATAC_powerlaw_v3"
@@ -173,6 +183,7 @@ def _full_row(ctx):
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
         ],
+        "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _full_path(ctx),
     }
 
@@ -187,6 +198,7 @@ def _thresholded_row(ctx):
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
         ],
+        "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _thresholded_path(ctx),
     }
 
@@ -201,6 +213,7 @@ def _bedpe_row(ctx):
         ),
         "derived_from": build_alias(ctx, "thresholded"),
         "file_format_specifications": [make_alias(ctx.igvf, "E2G_bedpe_file_format")],
+        "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _bedpe_path(ctx),
     }
 
@@ -215,6 +228,7 @@ def _elements_row(ctx):
             make_alias(ctx.igvf, "elements_reference_file_format_specification_pdf"),
             make_alias(ctx.igvf, "elements_reference_file_format_specification_md"),
         ],
+        "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _elements_path(ctx),
     }
 
@@ -229,6 +243,7 @@ def _genes_row(ctx):
             make_alias(ctx.igvf, "gene_quantifications_file_format_specification_pdf"),
             make_alias(ctx.igvf, "gene_quantifications_file_format_specification_md"),
         ],
+        "reference_files": _REFERENCE_FILES_GENE_QUANTIFICATIONS,
         "submitted_file_name": _genes_path(ctx),
     }
 
