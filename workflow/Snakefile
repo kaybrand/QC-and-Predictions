@@ -1,7 +1,15 @@
 """
 QC-and-Predictions: end-to-end pipeline from QC-filtered pseudobulks to
-Synapse-hosted scE2G data products, for one or more clusters across one or
-more datasets at a time.
+scE2G data products, for one or more clusters across one or more datasets at
+a time.
+
+igvf-portal-submission branch (this one): `rule all` deliberately excludes
+Synapse manifest generation (2026-08-03) -- Synapse and the IGVF Data Portal
+are separate, independently-developed destinations (see README's "Where this
+fits"); `rules/synapse_manifest.smk` is still included and its rules are
+still individually runnable, just not part of this branch's default target.
+IGVF Portal metadata upload is its own standalone step
+(workflow/scripts/manage_igvf_metadata.py), not yet Snakemake-integrated.
 
 Usage:
     mamba activate run_snakemake9
@@ -43,7 +51,6 @@ rule all:
         get_reformat_output_files(),
         get_candidates_output_files(),
         get_features_output_files(),
-        get_manifest_targets(),
         get_qc_stats_targets(),
         get_igv_track_files(),
         get_rna_matrix_packages(),
