@@ -41,6 +41,13 @@ get_multireport() is the one other read path here (2026-07-21): a raw GET
 against /multireport/ for cell_metadata.py's PseudobulkSet lookup --
 Connection.search() can't be reused for this, it hardcodes "search/" as
 the path.
+
+read_tsv/merge_write_tsv (2026-08-05): support orchestrator.py's per-
+(object_type, dataset) accumulator of every alias ever confirmed live --
+a durable, one-row-per-record_id reference for bulk field edits, kept
+deliberately separate from the ephemeral POST/PATCH working files that
+write_tsv still serves (those are meant to shrink/regenerate fresh every
+run; the accumulator is meant to only ever grow/update in place).
 """
 
 import json
@@ -148,6 +155,52 @@ def write_tsv(path, rows, record_ids=None):
             if record_ids is not None:
                 values[RECORD_ID_FIELD] = record_ids[i]
             f.write("\t".join(_tsv_cell(values.get(c)) for c in columns) + "\n")
+    return path
+
+
+def read_tsv(path):
+    """Symmetric with write_tsv: parses an existing file back into
+    record_id -> {column: cell_string}, using the exact same naive
+    tab-split convention (no csv module) that both write_tsv and
+    iu_register.py itself use. Returns {} if path doesn't exist yet."""
+    if not os.path.exists(path):
+        return {}
+    with open(path) as f:
+        lines = f.read().splitlines()
+    if not lines:
+        return {}
+    columns = lines[0].split("\t")
+    rows = {}
+    for line in lines[1:]:
+        cells = dict(zip(columns, line.split("\t")))
+        rid = cells.get(RECORD_ID_FIELD)
+        if rid:
+            rows[rid] = cells
+    return rows
+
+
+def merge_write_tsv(path, rows, record_ids):
+    """Upsert-by-record_id: unlike write_tsv, never drops a row already on
+    disk whose record_id isn't part of this call's fresh batch -- existing
+    rows are preserved, matching record_ids are overwritten in place, new
+    ones are appended. Used for the per-(object_type, dataset) accumulator
+    of confirmed-live aliases (see orchestrator.py) -- never for POST/PATCH
+    working files, which are meant to shrink/regenerate fresh each run."""
+    existing = read_tsv(path)
+    for row, rid in zip(rows, record_ids):
+        cells = {RECORD_ID_FIELD: str(rid)}
+        cells.update({k: _tsv_cell(v) for k, v in row.items()})
+        existing[str(rid)] = cells
+    if not existing:
+        return None
+    columns = [RECORD_ID_FIELD] + sorted({k for row in existing.values() for k in row if k != RECORD_ID_FIELD})
+    dirname = os.path.dirname(path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        f.write("\t".join(columns) + "\n")
+        for row in existing.values():
+            f.write("\t".join(row.get(c, "") for c in columns) + "\n")
     return path
 
 

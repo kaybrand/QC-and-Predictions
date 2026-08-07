@@ -6,26 +6,72 @@ iu_register.py rather than direct API calls.
 
 Two phases per table, every run:
   1. plan_table(): for every enabled row not already uploaded-and-unchanged,
-     check depends_on (against the local ledger), build+validate its
-     payload, hash it, and classify it as "post" (no existing portal
-     record for this alias) or "patch" (exists, and the hash changed) via
-     a live, read-only alias lookup. This is the ONLY network contact in
-     "preview" mode.
-  2. Write one post.tsv/patch.tsv per table under manifest_dir -- always,
-     in every mode, so the assembled tables are there "for the user to
-     peruse" regardless of what happens next. Then, depending on `mode`:
-       - "preview" (default): stop here. No call to iu_register.py.
-       - "validate": call iu_register.py --dry-run against each TSV --
-         real igvf_utils schema validation/type-casting, still zero writes.
-       - "upload": call iu_register.py for real, then re-verify every
-         intended row via a fresh alias lookup (iu_register.py doesn't
-         isolate row failures within one file, so its exit code alone
-         isn't trustworthy) and update the ledger accordingly.
+     build+validate its payload, hash it, and classify it as "post" (no
+     existing portal record for this alias) or "patch" (exists, and the
+     hash changed) via a live, read-only alias lookup. This is the ONLY
+     network contact in "preview" mode.
+  2. Write one post.tsv/patch.tsv per (dataset, table, variant, round) group
+     under manifest_dir/<dataset>/, filename-prefixed with that round number
+     -- see "Rounds" below. These are deliberately EPHEMERAL: only rows not
+     already uploaded-and-unchanged ever appear, so a table's post/patch
+     file shrinks down to just what's still outstanding as pieces get
+     uploaded (e.g. an already-uploaded cluster's rows don't clutter review
+     of newly-added ones) -- confirmed 2026-08-05 as a feature to keep, not
+     a gap to fix.
 
-Row ordering across tables/variants falls out of just re-running: a row
-deferred on a dependency is picked up automatically next time run() is
-called, whether that's the pipeline hook firing for a later cluster or the
-scanner's periodic reconciliation.
+Per-(object_type, dataset) accumulator (added 2026-08-05, manifest_dir/
+<dataset>/<object_type>.tsv): a SEPARATE, durable record of every alias ever
+confirmed live, one row per record_id, upserted every run (see
+portal_client.merge_write_tsv) -- never shrinks, never dropped, values
+updated in place if they change. Grouped by the portal's own object_type
+(iu_register.py's --profile_id), not our internal table_name, since several
+of our table modules share one object_type (e.g. filtered_barcode_list,
+filtered_atac_fragment_file, and every prediction_tabular_files variant are
+all "tabular_file") -- this is what actually makes a future bulk field edit
+across a whole object type a single edit-and-resubmit against one file,
+matching iu_register.py's own one-profile-per-invocation constraint. Fed
+from two places: plan_table's "unchanged" branch (already live, no live GET
+needed -- this is also how the accumulator backfills anything uploaded
+before this feature existed, automatically, on the next ordinary run) and
+_verify_and_record's return value (rows a real --mode upload pass just
+confirmed). Never itself passed to invoke_register -- it's a reference, not
+a submission.
+
+depends_on / rounds (redesigned 2026-08-05 -- see git history for the prior
+design this replaced): a row's dependencies name other (table_name,
+variant_name) pairs. Two DIFFERENT things used to be conflated under one
+gate ("is the dependency status='uploaded' in the local ledger"):
+  (a) external dependencies we don't control the timing of (the
+      Kundaje-lab primary pseudobulks) -- waiting for those to actually
+      exist made sense, since we can't predict when they land.
+  (b) our OWN dependency chain (QC_documents -> principal_pseudobulk_set ->
+      filtered_barcode_list/prediction_set -> ...) -- every alias in this
+      chain is a deterministic formula we can compute right now, regardless
+      of what's actually live on the portal yet, since WE fully control the
+      order things get uploaded in.
+Blocking (b) on the same live-status gate as (a) meant nothing past round 1
+could even be *built* to look at, forcing a slow "post one layer, wait,
+regenerate, next layer unblocks" loop -- fine for testing the pipeline,
+bad for actually running a real upload session where you want to review
+everything in one pass and then upload round by round.
+
+Now: depends_on's live-status gate still applies to "upload" mode (skip
+calling iu_register.py for a row whose dependency isn't confirmed live yet
+-- never submit a dangling cross-reference for real). In "preview"/
+"validate" mode, that gate is informational only (logged as PENDING, not
+skipped) -- every row's payload gets built and written regardless, tagged
+with its `round` (1 + max(round of each dependency), via _compute_round,
+memoized per (dataset, cluster, model-or-none, table, variant) since the
+same dependency is reused across many rows). Output filenames are
+round-prefixed (round{N}_{table}[_{variant}]_{post,patch}.tsv) so sorting
+the manifest_dir by filename IS the upload order -- ties (same round) get
+the same number, by construction.
+
+Row ordering across tables/variants otherwise falls out of just
+re-running: a row still deferred on a dependency in "upload" mode is
+picked up automatically next time run() is called, whether that's the
+pipeline hook firing for a later cluster or the scanner's periodic
+reconciliation.
 
 cell_metadata.refresh_if_stale() (2026-07-21) runs once at the top, before
 any table -- a single PseudobulkSet-multireport GET (24h TTL) that
@@ -99,12 +145,67 @@ def _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
             yield dataset, cluster, model, cluster_cfg
 
 
-def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir):
-    """Returns (to_post, to_patch, counts).
-    to_post:  list of (state_row_id, item_alias, payload)
-    to_patch: list of (state_row_id, item_alias, payload, record_id)
+def _dependency_model(dep_table_name, model_key):
+    """The dependency's OWN scope decides its model_key, not the dependent
+    variant's -- a cluster_model-scoped table (e.g. prediction_set)
+    depending on a cluster-scoped one (e.g. principal_pseudobulk_set) must
+    look/compute that row under model="" (how it's actually scoped), never
+    under the dependent's real model name, or the lookup silently never
+    matches (confirmed 2026-08-05: this blocked
+    prediction_set/signal_files/prediction_tabular_files forever, even
+    after their cluster-scoped dependency was genuinely uploaded)."""
+    return model_key if registry.get(dep_table_name).scope == "cluster_model" else ""
+
+
+def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, table_name, variant_name):
+    """1 + max(round of each dependency), memoized per (dataset, cluster,
+    model-or-"", table, variant) -- shared across the whole run() call so a
+    dependency reused by many rows (e.g. principal_pseudobulk_set) is only
+    ever walked once. Round 1 = no dependencies. Purely for REPORTING/
+    output-ordering -- never gates whether a row's payload gets built (see
+    module docstring)."""
+    key = (dataset, cluster, model or "", table_name, variant_name)
+    if key in cache:
+        return cache[key]
+    table = registry.get(table_name)
+    variant = next(v for v in table.variants if v.name == variant_name)
+    ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, conn=conn)
+    deps = variant.depends_on(ctx)
+    if not deps:
+        cache[key] = 1
+        return 1
+    dep_rounds = []
+    for dep_table_name, dep_variant in deps:
+        # Same scope-aware resolution as _dependency_model, but returning the
+        # real model value (or None) for building the dependency's own Context
+        # -- not the ledger lookup's "" placeholder.
+        dep_model = model if registry.get(dep_table_name).scope == "cluster_model" else None
+        dep_rounds.append(
+            _compute_round(
+                cache, conn, dataset, cluster, dep_model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir,
+                dep_table_name, dep_variant,
+            )
+        )
+    cache[key] = 1 + max(dep_rounds)
+    return cache[key]
+
+
+def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, mode, round_cache):
+    """Returns (to_post, to_patch, to_record, counts).
+    to_post/to_patch: list of dicts with keys row_id, alias, payload,
+    variant, round, dataset (to_patch additionally has record_id) -- run()
+    groups by (dataset, variant, round) to decide output filenames. These
+    are the ephemeral, this-run-only working files handed to iu_register.py
+    -- ONLY rows not already uploaded-and-unchanged ever appear here, by
+    design (see module docstring's note on why this is left alone).
+
+    to_record: list of dicts with keys object_type, record_id, payload --
+    every row found already `status=uploaded` with a matching hash (i.e.
+    the "unchanged" branch below). Feeds orchestrator.run()'s separate,
+    durable per-(object_type, dataset) accumulator -- never handed to
+    iu_register.py.
     """
-    to_post, to_patch = [], []
+    to_post, to_patch, to_record = [], [], []
     counts = {}
 
     def bump(key):
@@ -131,24 +232,28 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
 
             deferred_on = None
             for dep_table_name, dep_variant in variant.depends_on(ctx):
-                # The dependency's OWN scope decides its model_key, not this
-                # variant's -- a cluster_model-scoped table (e.g. prediction_set)
-                # depending on a cluster-scoped one (e.g. principal_pseudobulk_set)
-                # must look that row up under model="" (how it was actually
-                # stored), never under this variant's real model name, or the
-                # lookup silently never matches (confirmed 2026-08-05: this
-                # blocked prediction_set/signal_files/prediction_tabular_files
-                # forever, even after their cluster-scoped dependency was
-                # genuinely uploaded).
-                dep_model_key = model_key if registry.get(dep_table_name).scope == "cluster_model" else ""
+                dep_model_key = _dependency_model(dep_table_name, model_key)
                 dep = state.get_upload(conn, dataset, cluster, dep_model_key, dep_table_name, dep_variant)
                 if not dep or dep["status"] != "uploaded":
                     deferred_on = f"{dep_table_name}/{dep_variant or '(default)'}"
                     break
+
+            round_num = _compute_round(
+                round_cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir,
+                table.name, variant.name,
+            )
+
             if deferred_on:
-                log(f"DEFERRED {item_alias}: waiting on {deferred_on}")
-                bump("deferred")
-                continue
+                if mode == "upload":
+                    # Real submission: never send a payload that cross-references
+                    # something not actually live yet -- wait for a later run.
+                    log(f"DEFERRED {item_alias}: waiting on {deferred_on}")
+                    bump("deferred")
+                    continue
+                # preview/validate: build+write it anyway, tagged with its round,
+                # so the whole chain can be reviewed in one pass -- see module
+                # docstring. Just note it's not actually postable yet.
+                log(f"PENDING (round {round_num}) {item_alias}: not yet live -- waiting on {deferred_on}")
 
             try:
                 payload = build_payload(table, variant, ctx, item_alias)
@@ -162,6 +267,9 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
             existing = state.get_upload(conn, dataset, cluster, model_key, table.name, variant.name)
             if existing and existing["status"] == "uploaded" and existing["payload_hash"] == new_hash:
                 bump("unchanged")
+                to_record.append(
+                    {"dataset": dataset, "object_type": table.object_type, "record_id": existing["portal_id"], "payload": payload}
+                )
                 continue
 
             row = state.claim_pending(
@@ -170,28 +278,48 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
 
             portal_record = reader.get_by_alias(item_alias)
             if portal_record is None:
-                to_post.append((row["id"], item_alias, payload))
+                to_post.append(
+                    {
+                        "row_id": row["id"], "alias": item_alias, "payload": payload, "variant": variant.name,
+                        "round": round_num, "dataset": dataset,
+                    }
+                )
                 bump("planned-post")
             else:
                 record_id = portal_record.get("uuid") or portal_record.get("accession") or portal_record.get("@id")
-                to_patch.append((row["id"], item_alias, payload, record_id))
+                to_patch.append(
+                    {
+                        "row_id": row["id"], "alias": item_alias, "payload": payload, "record_id": record_id,
+                        "variant": variant.name, "round": round_num, "dataset": dataset,
+                    }
+                )
                 bump("planned-patch")
 
-    return to_post, to_patch, counts
+    return to_post, to_patch, to_record, counts
 
 
 def _verify_and_record(conn, reader, rows):
-    """rows: iterable of tuples whose first two elements are (state_row_id,
-    item_alias) -- works for both to_post and to_patch entries. Re-checks
-    the portal directly rather than trusting iu_register.py's exit code."""
+    """rows: iterable of dicts with at least row_id/alias (to_post or
+    to_patch entries both qualify). Re-checks the portal directly rather
+    than trusting iu_register.py's exit code.
+
+    Returns the entries just confirmed live, each augmented with its
+    resolved record_id -- run() feeds these into the per-(object_type,
+    dataset) accumulator alongside plan_table's "unchanged" rows, so a
+    freshly-succeeded real POST/PATCH is reflected there immediately
+    rather than waiting for next run's "unchanged" pass to pick it up."""
+    verified = []
     for entry in rows:
-        row_id, item_alias = entry[0], entry[1]
-        record = reader.get_by_alias(item_alias)
+        record = reader.get_by_alias(entry["alias"])
         if record:
             portal_id = record.get("uuid") or record.get("accession") or record.get("@id")
-            state.record_result(conn, row_id, "uploaded", portal_id=portal_id, now=_now())
+            state.record_result(conn, entry["row_id"], "uploaded", portal_id=portal_id, now=_now())
+            verified.append({**entry, "record_id": portal_id})
         else:
-            state.record_result(conn, row_id, "failed", error="not found on portal after upload attempt", now=_now())
+            state.record_result(
+                conn, entry["row_id"], "failed", error="not found on portal after upload attempt", now=_now()
+            )
+    return verified
 
 
 def run(
@@ -247,47 +375,83 @@ def run(
     )
 
     tables = [t for t in registry.all_specs() if table_names is None or t.name in table_names]
+    round_cache = {}  # shared across every table this run -- see _compute_round
+    accumulator_entries = []  # collected across every table -- see per-(object_type, dataset) write-out below
     report = {}
     for table in tables:
-        to_post, to_patch, counts = plan_table(
-            conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir
+        to_post, to_patch, to_record, counts = plan_table(
+            conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, mode, round_cache
         )
+        log(f"{table.name}: {counts}")
+        accumulator_entries.extend(to_record)
 
-        post_path = os.path.join(manifest_dir, f"{table.name}_post.tsv")
-        patch_path = os.path.join(manifest_dir, f"{table.name}_patch.tsv")
-        written_post = portal_client.write_tsv(post_path, [p for _, _, p in to_post]) if to_post else None
-        written_patch = (
-            portal_client.write_tsv(
-                patch_path, [p for _, _, p, _ in to_patch], record_ids=[r for _, _, _, r in to_patch]
-            )
-            if to_patch
-            else None
-        )
+        # Group by (dataset, variant, round), not just table: a table whose variants
+        # sit at different dependency layers (e.g. prediction_tabular_files' elements/
+        # genes vs full vs thresholded vs bedpe) must split into separately
+        # round-numbered files -- one round per file, so sorting a dataset's
+        # subfolder by filename gives the actual upload order (see module
+        # docstring). Splitting by dataset too keeps concurrent datasets' files
+        # from ever mixing -- each dataset gets its own manifest_dir subfolder.
+        groups = {}
+        for entry in to_post:
+            groups.setdefault((entry["dataset"], entry["variant"], entry["round"], "post"), []).append(entry)
+        for entry in to_patch:
+            groups.setdefault((entry["dataset"], entry["variant"], entry["round"], "patch"), []).append(entry)
 
-        table_report = {"counts": counts, "post_tsv": written_post, "patch_tsv": written_patch}
-        log(f"{table.name}: {counts} (post_tsv={written_post}, patch_tsv={written_patch})")
+        table_report = {"counts": counts, "files": []}
+        for (dataset, variant_name, round_num, kind), entries in sorted(
+            groups.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1])
+        ):
+            suffix = f"_{variant_name}" if variant_name else ""
+            fname = f"round{round_num}_{table.name}{suffix}_{kind}.tsv"
+            path = os.path.join(manifest_dir, dataset, fname)
+            if kind == "post":
+                written = portal_client.write_tsv(path, [e["payload"] for e in entries])
+            else:
+                written = portal_client.write_tsv(
+                    path, [e["payload"] for e in entries], record_ids=[e["record_id"] for e in entries]
+                )
+            table_report["files"].append(written)
+            log(f"  -> {dataset}/{fname}: {len(entries)} row(s)")
 
-        if mode != "preview":
-            iu_results = []
-            for path, patch_flag, rows in ((written_post, False, to_post), (written_patch, True, to_patch)):
-                if not path:
-                    continue
+            if mode != "preview" and written:
                 result = portal_client.invoke_register(
-                    path,
+                    written,
                     table.object_type,
-                    patch=patch_flag,
+                    patch=(kind == "patch"),
                     dry_run=(mode == "validate"),
                     igvf_mode=igvf_mode,
                     iu_register_path=iu_register_path,
                 )
-                iu_results.append({"file": path, "returncode": result.returncode, "stderr": result.stderr[-2000:]})
+                table_report.setdefault("iu_register_results", []).append(
+                    {"file": written, "returncode": result.returncode, "stderr": result.stderr[-2000:]}
+                )
                 if result.returncode != 0:
-                    log(f"iu_register.py FAILED on {path} (exit {result.returncode}): {result.stderr[-500:]}")
+                    log(f"iu_register.py FAILED on {written} (exit {result.returncode}): {result.stderr[-500:]}")
                 if mode == "upload":
-                    _verify_and_record(conn, reader, rows)
-            table_report["iu_register_results"] = iu_results
+                    verified = _verify_and_record(conn, reader, entries)
+                    accumulator_entries.extend(
+                        {"dataset": v["dataset"], "object_type": table.object_type, "record_id": v["record_id"], "payload": v["payload"]}
+                        for v in verified
+                    )
 
         report[table.name] = table_report
+
+    # Per-(object_type, dataset) accumulator: every alias ever confirmed live, one
+    # row per record_id, upserted (never dropped) -- a durable reference shaped for
+    # bulk field patches later, deliberately separate from the ephemeral POST/PATCH
+    # working files above. Written once per group here (not per table) so an
+    # object_type shared by multiple table modules (e.g. "tabular_file") gets one
+    # merge-write covering all of them, not several partial ones.
+    accumulator_groups = {}
+    for entry in accumulator_entries:
+        accumulator_groups.setdefault((entry["dataset"], entry["object_type"]), []).append(entry)
+    for (dataset, object_type), entries in accumulator_groups.items():
+        path = os.path.join(manifest_dir, dataset, f"{object_type}.tsv")
+        portal_client.merge_write_tsv(
+            path, [e["payload"] for e in entries], record_ids=[e["record_id"] for e in entries]
+        )
+        log(f"  -> {dataset}/{object_type}.tsv: {len(entries)} row(s) merged")
 
     if mode == "upload":
         # Re-derive and re-push the shareable Cell Annotation table whenever a real

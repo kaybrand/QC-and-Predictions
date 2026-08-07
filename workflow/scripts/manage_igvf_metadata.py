@@ -49,7 +49,13 @@ def main():
         help='comma-separated "dataset/cluster" tokens excluded this run (recorded, never uploaded)',
     )
     p.add_argument("--state-db", required=True)
-    p.add_argument("--manifest-dir", required=True, help="where per-table post/patch TSVs are written for review")
+    p.add_argument(
+        "--manifest-dir",
+        required=True,
+        help="where per-dataset subfolders are written: <dataset>/round{N}_{table}[_{variant}]_"
+        "{post,patch}.tsv for review/upload (ephemeral, shrinks as pieces go live), plus "
+        "<dataset>/<object_type>.tsv, a durable accumulator of every alias ever confirmed live",
+    )
     p.add_argument(
         "--mode",
         choices=["preview", "validate", "upload"],
