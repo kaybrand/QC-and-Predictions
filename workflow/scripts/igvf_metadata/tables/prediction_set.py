@@ -49,7 +49,10 @@ def _row(ctx):
             refs.trained_model_set_alias(ctx),  # the model Set, not the FILE derived_from-shaped fields use
             refs.principal_pseudobulk_set_alias(ctx),  # itself contains the RNA/ATAC files, "and more"
         ],
-        "documents": [make_alias(ctx.igvf, "E2G_prediction_set_files")],
+        "documents": [
+            make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_pdf"),
+            make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_md"),
+        ],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
         "samples": subsamples.subsamples_by_frequency(ctx),  # raw values ARE Sample accessions already -- see module docstring
     }
