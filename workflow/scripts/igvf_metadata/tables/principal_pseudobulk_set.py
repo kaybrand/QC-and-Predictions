@@ -86,7 +86,14 @@ TABLE = registry.register(
         scope="cluster",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_set_type"],
-        constant_fields={"file_set_type": "pseudobulk analysis", "merged": True},
+        constant_fields={
+            "file_set_type": "pseudobulk analysis",
+            "merged": True,
+            "submitter_comment": (
+                "This principal pseudobulk set is based on status: 'in progress' data and will be "
+                "superseded when those data are updated"
+            ),
+        },
         variants=[
             # name="" to match every dependent table's depends_on=[("principal_pseudobulk_set", "")]
             registry.VariantSpec(
