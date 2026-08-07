@@ -44,6 +44,11 @@ def build_alias(ctx, variant_name):
 
 
 def _row(ctx):
+    # cell_type/cell_qualifier (added 2026-08-06): identical formula to
+    # Principal Pseudobulk Set's own _row() -- same (dataset, cluster)-keyed
+    # cell_metadata lookup, repeated per model since this table is
+    # cluster_model-scoped but the underlying metadata isn't.
+    metadata = refs.primary_pseudobulk_metadata(ctx)
     return {
         "input_file_sets": [
             refs.trained_model_set_alias(ctx),  # the model Set, not the FILE derived_from-shaped fields use
@@ -55,6 +60,8 @@ def _row(ctx):
         ],
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
         "samples": subsamples.subsamples_by_frequency(ctx),  # raw values ARE Sample accessions already -- see module docstring
+        "cell_type": f"/sample-terms/{metadata['cl_id']}/",
+        "cell_qualifier": metadata["cell_qualifier"],
     }
 
 
