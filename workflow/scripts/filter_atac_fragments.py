@@ -31,21 +31,27 @@ def parse_args():
     return p.parse_args()
 
 
-def load_passing_barcodes(qc_guide_path: str) -> dict:
+def load_passing_barcodes(qc_guide_path: str) -> set:
     """
-    Read the QC filter guide and return a dict mapping
-    16-character barcode prefix -> full barcode string.
+    Read the QC filter guide and return a set of full barcode strings
+    (e.g. CCATATTTCGATAACC_IGVFSM4662QKFQ). Matching is always on the full
+    name -- no trimming, no remapping (mirrors filter_rna_counts.py).
+    The 16bp nucleotide prefix alone is NOT unique: the same 10x barcode
+    sequence can recur across different multiplexed lanes/analyses within
+    a single subsample, so truncating to 16 chars collapses distinct cells
+    onto the same key and silently corrupts output (confirmed in production:
+    one cell's fragments got misattributed to another, and the first was
+    dropped entirely).
     """
-    barcodes = {}
+    barcodes = set()
     opener = gzip.open if qc_guide_path.endswith(".gz") else open
     with opener(qc_guide_path, "rt") as fh:
-        header = fh.readline()  # skip header
+        fh.readline()  # skip header
         for line in fh:
             line = line.strip()
             if not line:
                 continue
-            full_bc = line.split("\t")[0]
-            barcodes[full_bc[:16]] = full_bc
+            barcodes.add(line.split("\t")[0])
     print(f"[info] Loaded {len(barcodes)} passing barcodes from QC guide.", file=sys.stderr)
     return barcodes
 
@@ -67,12 +73,12 @@ def find_fragment_dirs(pseudobulks_dir: str, cell_type: str) -> list:
     return []
 
 
-def filter_fragments(frag_path: str, passing_barcodes: dict, out_fh, found_barcodes: set, clean: bool):
+def filter_fragments(frag_path: str, passing_barcodes: set, out_fh, found_barcodes: set, clean: bool):
     """
     Stream through a gzipped fragment file, writing rows whose 4th-column
-    barcode (first 16 chars) is in passing_barcodes to out_fh.
-    Replaces the barcode field with the full barcode from the QC guide,
-    or just the 16-char nucleotide sequence if clean=True.
+    barcode (full string, e.g. CCATATTTCGATAACC_IGVFSM4662QKFQ) is in
+    passing_barcodes to out_fh. Writes just the 16-char nucleotide sequence
+    if clean=True, else the full barcode as found in the fragment file.
     Updates found_barcodes in place.
     Returns (n_pass, n_total).
     """
@@ -87,11 +93,12 @@ def filter_fragments(frag_path: str, passing_barcodes: dict, out_fh, found_barco
             if len(fields) < 4:
                 continue
             n_total += 1
-            bc16 = fields[3][:16]
-            if bc16 in passing_barcodes:
-                fields[3] = bc16 if clean else passing_barcodes[bc16]
+            bc = fields[3]
+            if bc in passing_barcodes:
+                if clean:
+                    fields[3] = bc[:16]
                 out_fh.write("\t".join(fields) + "\n")
-                found_barcodes.add(bc16)
+                found_barcodes.add(bc)
                 n_pass += 1
     return n_pass, n_total
 
@@ -140,11 +147,11 @@ def main():
     print(f"[info] Total passing rows: {total_pass}/{total_rows} ({total_pct:.1f}%)", file=sys.stderr)
 
     # Sanity check: report any QC-passing barcodes never seen in any fragment file
-    missing_barcodes = set(passing_barcodes.keys()) - found_barcodes
+    missing_barcodes = passing_barcodes - found_barcodes
     if missing_barcodes:
         print(f"[warning] {len(missing_barcodes)} barcode(s) from the QC guide were not found in any fragment file:", file=sys.stderr)
         for bc in sorted(missing_barcodes):
-            print(f"  {passing_barcodes[bc]}", file=sys.stderr)
+            print(f"  {bc}", file=sys.stderr)
     else:
         print(f"[info] Sanity check passed: all {len(passing_barcodes)} QC-guide barcodes were found in at least one fragment file.", file=sys.stderr)
 
