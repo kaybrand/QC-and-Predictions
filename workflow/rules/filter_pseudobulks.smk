@@ -59,6 +59,13 @@ rule rna_count_matrix:
         matrix=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "matrix.mtx.gz"),
         barcodes_out=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "barcodes.tsv.gz"),
         features_out=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}", "features.tsv.gz"),
+        # Also declared as its own directory() output: scE2G's own
+        # generate_atac_matrix rule (the Kendall-feature branch) takes this
+        # directory itself as a literal input path (via the cell_clusters
+        # table's rna_matrix_file column), not the three files above. Without
+        # this, Snakemake can't find a producing rule for that literal path
+        # on a from-scratch dataset and raises MissingInputException.
+        rna_dir=directory(os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}")),
     params:
         pseudobulks=lambda wildcards: pseudobulks_dir(wildcards.dataset),
         cell_type=cluster_pseudobulk_annotation,
