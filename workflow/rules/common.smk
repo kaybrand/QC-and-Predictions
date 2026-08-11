@@ -244,6 +244,11 @@ if DATASETS:
 GENERATED_RULES_DIR = os.path.join(workflow.basedir, "rules", "generated")
 os.makedirs(GENERATED_RULES_DIR, exist_ok=True)
 SCE2G_MODULE_FILES = []
+# Explicit path->dataset lookup (not implicit zip(DATASETS, SCE2G_MODULE_FILES)
+# ordering) so the Snakefile's own inclusion loop can compute each dataset's
+# ABC_BIOSAMPLES path without assuming these two lists stay in lockstep --
+# see that loop's own comment for why it needs this at all.
+SCE2G_MODULE_FILE_DATASETS = {}
 for _dataset in DATASETS:
     _module_name = f"scE2G_{_dataset}"
     _rule_prefix = f"sce2g_{_dataset}"
@@ -279,3 +284,4 @@ for _dataset in DATASETS:
             f'use rule * from {_module_name} exclude plot_stats as {_rule_prefix}_*\n'
         )
     SCE2G_MODULE_FILES.append(_generated_path)
+    SCE2G_MODULE_FILE_DATASETS[_generated_path] = _dataset
