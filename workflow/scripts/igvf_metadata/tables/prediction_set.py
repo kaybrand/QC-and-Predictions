@@ -14,6 +14,18 @@ No derived_from field: the Prediction Set profile doesn't have one at all
 pre-joined-string copy of input_file_sets, which was both invalid (not a
 real property on this schema) and redundant even if it had been.
 
+submitter_comment (added 2026-08-11): a flat "Version 1" constant for every
+NEW Prediction Set -- safe here specifically because a brand-new object has
+no pre-existing live value to clobber, unlike an already-uploaded one (see
+../../patch_prediction_set_submitter_comment.py, the separate one-off script
+that backfills this marker onto already-live PredictionSets -- e.g. IGVF4's
+-- without blindly overwriting any genuine free text already there). Do NOT
+move this into a live-value-aware check here: orchestrator.build_payload
+recomputes every field from local config alone on every run, so this
+constant is exactly what every future reconciliation PATCH re-sends anyway
+-- fine only because it's a fixed literal, not something a submitter is
+expected to hand-edit on the portal directly.
+
 Resolved 2026-07-20: samples' raw "subsample" column values (e.g.
 "IGVFSM6456LUAO") ARE literal portal Sample accessions already -- on the
 IGVF Data Portal, "Sample" is the In-Vitro-System object type, distinct from
@@ -72,7 +84,11 @@ TABLE = registry.register(
         scope="cluster_model",
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab"],
-        constant_fields={"file_set_type": "functional effect", "scope": "genome-wide"},
+        constant_fields={
+            "file_set_type": "functional effect",
+            "scope": "genome-wide",
+            "submitter_comment": "Version 1",
+        },
         variants=[
             # name="" (not e.g. "default") deliberately -- every other table's
             # depends_on=[("prediction_set", "")] must match this exactly;
