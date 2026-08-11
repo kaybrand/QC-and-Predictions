@@ -35,8 +35,40 @@ include: "rules/common.smk"
 # themselves are generated as literal per-dataset files (common.smk,
 # SCE2G_MODULE_FILES) since neither `module NAME:` nor `use rule ... as
 # PATTERN` accepts a computed/f-string value -- only `include:` does.
+#
+# ABC_BIOSAMPLES mtime-bump workaround -- QC-and-Predictions side, deliberately
+# NOT a fix to the scE2G checkout itself (that's a separate, shared worktree;
+# never edit it from here). scE2G's own Snakefile (parsed below, once per
+# dataset, as a side effect of the `module`/`use rule` statements the included
+# file below contains) unconditionally rewrites
+# {results_dir}/tmp/config_abc_biosamples.tsv at PARSE time -- see scE2G's
+# workflow/rules/utils.smk make_biosample_config(), which always calls
+# df.to_csv(...) with no check against the file's existing content. A fresh
+# mtime there, even with byte-identical content, fools Snakemake's mtime-based
+# DAG into thinking every rule downstream of it needs to rerun (confirmed
+# 2026-08: a plain `-n` dry-run touching nothing scE2G-related still cascaded
+# into ~140 jobs, including re-running the trained model application). Since
+# we can't change scE2G's own code, snapshot this file's content+mtime
+# immediately before each dataset's module gets parsed, and restore the old
+# mtime afterward if the content is byte-identical -- a real config change
+# (e.g. a cluster added/removed) still updates the file and correctly
+# triggers reruns; a no-op invocation no longer does.
 for _scE2G_module_file in SCE2G_MODULE_FILES:
+    _scE2G_dataset = SCE2G_MODULE_FILE_DATASETS[_scE2G_module_file]
+    _abc_biosamples_path = os.path.join(RESULTS_DIRS[_scE2G_dataset], "tmp", "config_abc_biosamples.tsv")
+    _abc_biosamples_prev_stat = os.stat(_abc_biosamples_path) if os.path.exists(_abc_biosamples_path) else None
+    _abc_biosamples_prev_content = None
+    if _abc_biosamples_prev_stat is not None:
+        with open(_abc_biosamples_path) as _abc_biosamples_f:
+            _abc_biosamples_prev_content = _abc_biosamples_f.read()
+
     include: _scE2G_module_file
+
+    if _abc_biosamples_prev_stat is not None and os.path.exists(_abc_biosamples_path):
+        with open(_abc_biosamples_path) as _abc_biosamples_f:
+            _abc_biosamples_new_content = _abc_biosamples_f.read()
+        if _abc_biosamples_new_content == _abc_biosamples_prev_content:
+            os.utime(_abc_biosamples_path, (_abc_biosamples_prev_stat.st_atime, _abc_biosamples_prev_stat.st_mtime))
 
 
 include: "rules/filter_pseudobulks.smk"
