@@ -65,7 +65,10 @@ def main():
         "upload: run iu_register.py for real -- requires explicitly choosing this.",
     )
     p.add_argument("--tables", default="", help="comma-separated table names to restrict to (default: all registered)")
-    p.add_argument("--igvf-mode", default=None, help="passed through to igvf_utils, e.g. sandbox/prod")
+    p.add_argument(
+        "--igvf-mode", default="prod",
+        help="passed through to igvf_utils, e.g. sandbox/prod -- defaults to prod (the real production portal)",
+    )
     p.add_argument("--iu-register-path", default=None, help="override the default iu_register.py path")
     args = p.parse_args()
 
