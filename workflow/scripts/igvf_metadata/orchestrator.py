@@ -310,7 +310,13 @@ def _verify_and_record(conn, reader, rows):
     rather than waiting for next run's "unchanged" pass to pick it up."""
     verified = []
     for entry in rows:
-        record = reader.get_by_alias(entry["alias"])
+        # database=True: this runs seconds after invoke_register's real write, in the
+        # same process -- the default Elasticsearch-backed read can lag that write and
+        # falsely report "not found," which record_result below would then persist as
+        # status="failed" (blocking any same-run dependent table via the depends_on
+        # gate above) for a row that's actually live. Confirmed against real production
+        # data 2026-08-11 while backfilling Prediction Set submitter_comment.
+        record = reader.get_by_alias(entry["alias"], database=True)
         if record:
             portal_id = record.get("uuid") or record.get("accession") or record.get("@id")
             state.record_result(conn, entry["row_id"], "uploaded", portal_id=portal_id, now=_now())

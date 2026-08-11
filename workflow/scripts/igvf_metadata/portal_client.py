@@ -82,9 +82,20 @@ class PortalReader:
             self._conn = Connection(igvf_mode=self.igvf_mode)
         return self._conn
 
-    def get_by_alias(self, alias: str):
-        """Returns the portal record dict, or None if it doesn't exist yet."""
-        return self._connection().get(alias, ignore404=True) or None
+    def get_by_alias(self, alias: str, database=False):
+        """Returns the portal record dict, or None if it doesn't exist yet.
+
+        database=False (default, unchanged behavior for existing callers)
+        reads Connection.get()'s own default: the Elasticsearch-backed search
+        index, not the database directly -- fine for a plain existence check,
+        but confirmed 2026-08-11 to lag a freshly-completed real PATCH by at
+        least several seconds (a same-process re-GET immediately after a live
+        upload came back with the PRE-patch field value even though the
+        database write itself had already succeeded, verified separately via
+        a database=True GET). Callers verifying a specific field's value
+        right after writing it should pass database=True to read the
+        database directly and avoid that false negative."""
+        return self._connection().get(alias, ignore404=True, database=database) or None
 
     def get_multireport(self, query_string: str):
         """One raw GET against the /multireport/ endpoint -- e.g. cell_metadata.py's
