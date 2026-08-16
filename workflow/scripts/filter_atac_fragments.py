@@ -27,7 +27,6 @@ def parse_args():
     p.add_argument("--cell-type",    required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF').")
     p.add_argument("--chrom-sizes",  required=True, help="Chromosome sizes file defining the expected sort order (e.g. hg38.chrom.sizes).")
     p.add_argument("--out",          required=True, help="Output path for the filtered, sorted, bgzipped fragment file.")
-    p.add_argument("--clean",        action="store_true", help="If set, write only the 16-character nucleotide barcode sequence to output (strip suffix). Default: preserve full barcode.")
     return p.parse_args()
 
 
@@ -73,30 +72,30 @@ def find_fragment_dirs(pseudobulks_dir: str, cell_type: str) -> list:
     return []
 
 
-def filter_fragments(frag_path: str, passing_barcodes: set, out_fh, found_barcodes: set, clean: bool):
+def filter_fragments(frag_path: str, passing_barcodes: set, out_fh, found_barcodes: set):
     """
     Stream through a gzipped fragment file, writing rows whose 4th-column
     barcode (full string, e.g. CCATATTTCGATAACC_IGVFSM4662QKFQ) is in
-    passing_barcodes to out_fh. Writes just the 16-char nucleotide sequence
-    if clean=True, else the full barcode as found in the fragment file.
-    Updates found_barcodes in place.
+    passing_barcodes to out_fh, unchanged. Updates found_barcodes in place.
     Returns (n_pass, n_total).
     """
     n_pass = 0
     n_total = 0
     opener = gzip.open if frag_path.endswith(".gz") else open
     with opener(frag_path, "rt") as fh:
-        for line in fh:
+        for line_num, line in enumerate(fh, start=1):
             if line.startswith("#"):
                 continue
             fields = line.rstrip("\n").split("\t")
-            if len(fields) < 4:
-                continue
+            if len(fields) != 5:
+                raise ValueError(
+                    f"Malformed fragment record in {frag_path}, line {line_num}: "
+                    f"expected 5 tab-separated fields (chrom, start, end, barcode, "
+                    f"duplicate count), got {len(fields)}: {line.rstrip(chr(10))!r}"
+                )
             n_total += 1
             bc = fields[3]
             if bc in passing_barcodes:
-                if clean:
-                    fields[3] = bc[:16]
                 out_fh.write("\t".join(fields) + "\n")
                 found_barcodes.add(bc)
                 n_pass += 1
@@ -137,7 +136,7 @@ def main():
             if not os.path.isfile(frag_path):
                 print(f"[warning] fragments.tsv.gz not found in {d}, skipping.", file=sys.stderr)
                 continue
-            n_pass, n_total = filter_fragments(frag_path, passing_barcodes, tmp, found_barcodes, args.clean)
+            n_pass, n_total = filter_fragments(frag_path, passing_barcodes, tmp, found_barcodes)
             pct = 100 * n_pass / n_total if n_total > 0 else 0.0
             print(f"[info]   {os.path.basename(d)}: {n_pass}/{n_total} rows retained ({pct:.1f}%)", file=sys.stderr)
             total_pass += n_pass
@@ -149,9 +148,10 @@ def main():
     # Sanity check: report any QC-passing barcodes never seen in any fragment file
     missing_barcodes = passing_barcodes - found_barcodes
     if missing_barcodes:
-        print(f"[warning] {len(missing_barcodes)} barcode(s) from the QC guide were not found in any fragment file:", file=sys.stderr)
+        print(f"[error] {len(missing_barcodes)} barcode(s) from the QC guide were not found in any fragment file:", file=sys.stderr)
         for bc in sorted(missing_barcodes):
             print(f"  {bc}", file=sys.stderr)
+        sys.exit(1)
     else:
         print(f"[info] Sanity check passed: all {len(passing_barcodes)} QC-guide barcodes were found in at least one fragment file.", file=sys.stderr)
 
