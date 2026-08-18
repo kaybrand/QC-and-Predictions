@@ -96,3 +96,18 @@ clusters:
   #     pseudobulk_annotation: some_annotation_dir
   #     qc_guide: /oak/.../plots/igvf17/example_atac_only_cluster/QC_filtered_excluding_BAD_SUBSAMPLE.tsv.gz
   #     models: [scATAC_powerlaw_v3]   # RNA matrix never generated for this cluster
+  # ATAC-only VARIANT of an otherwise-real cluster (RNA quality too poor for
+  # predictions, e.g. pancreatic_delta_d32_ATAC_only): cluster key carries the
+  # _ATAC_only suffix (drives file names/output paths/report rows), but
+  # pseudobulk_annotation stays the bare raw-directory name, and
+  # cell_annotation_key points reformat at the base name's real portal
+  # CellAnnotation/SampleTermID/SampleTermName (the suffixed name has none).
+  # igvf_manifest_excluded keeps it out of any --cluster-keys list built for
+  # manage_igvf_metadata.py, even though it's reformat-eligible.
+  # igvf6:
+  #   pancreatic_delta_d32_ATAC_only:
+  #     pseudobulk_annotation: pancreatic_delta_d32
+  #     qc_guide: /oak/.../plots/igvf6/pancreatic_delta_d32/filtered_barcodes_with_subsamples.tsv.gz
+  #     models: [scATAC_powerlaw_v3]
+  #     cell_annotation_key: pancreatic_delta_d32
+  #     igvf_manifest_excluded: true

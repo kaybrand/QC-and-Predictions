@@ -36,6 +36,8 @@ from write_scE2G_config import (  # noqa: E402
     load_cluster_metadata,
 )
 from pipeline_paths import resolve_repo_relative  # noqa: E402
+from cell_annotations import annotation_lookup_key  # noqa: E402
+from igvf_metadata import state as igvf_state  # noqa: E402
 
 # Consolidated OUTPUT root for everything this pipeline WRITES (filtered
 # ATAC/RNA outputs, scE2G's own results tree, Synapse manifests, cluster-stats
@@ -149,6 +151,38 @@ else:
 CLUSTER_STATS_DIR = os.path.join(OUTPUT_DIR, "cluster_stats")
 for _stats_dataset in config["clusters"]:
     write_cluster_stats_table(_stats_dataset, CLUSTER_STATS, CLUSTER_STATS_DIR)
+
+# CellAnnotation-based reformat eligibility: a quality-passing cluster
+# missing CellAnnotation still gets full predictions/candidates/features --
+# it's just not reformatted into portal format. Gated on the SAME live cache
+# reformat.smk's portal_cell_metadata() reads (igvf_metadata.state's
+# cell_annotations table, populated by cell_metadata.refresh_if_stale's real
+# IGVF Portal GET -- see manage_igvf_metadata.py) -- NOT
+# cell_annotations_by_dataset_cluster.tsv, which is a manually-pulled preview
+# snapshot for human/report reading, not an authoritative gate: it can say
+# "has annotation" for a cluster whose dataset has never actually been run
+# through manage_igvf_metadata.py, which would otherwise let this pipeline
+# request a reformat rule that immediately crashes on a cold cache (confirmed
+# empirically 2026-08-15). Read-only local SQLite query -- no network contact
+# at parse time; the cache itself is warmed by a separate, explicit
+# `manage_igvf_metadata.py --mode preview` invocation (see the plan's
+# execution order). ATAC-only variant clusters resolve via their
+# cell_annotation_key override (base name), not their suffixed key.
+REFORMAT_ELIGIBLE_CLUSTERS = set()
+_state_db_path = config.get("igvf", {}).get("state_db_path")
+if _state_db_path:
+    _state_conn = igvf_state.connect(_state_db_path)
+    for dataset, cluster in UPLOAD_ELIGIBLE_CLUSTERS:
+        _lookup_key = annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster])
+        if igvf_state.get_cell_annotation(_state_conn, *_lookup_key):
+            REFORMAT_ELIGIBLE_CLUSTERS.add((dataset, cluster))
+    _state_conn.close()
+_missing_annotation = UPLOAD_ELIGIBLE_CLUSTERS - REFORMAT_ELIGIBLE_CLUSTERS
+if _missing_annotation:
+    print(
+        "[QC-and-Predictions] Quality-passing but no cached CellAnnotation yet "
+        f"(predictions only, no reformat until manage_igvf_metadata.py warms the cache): {sorted(_missing_annotation)}"
+    )
 
 # Distinct datasets actually needed this run (a dataset whose clusters were all
 # excluded gets no scE2G module instance at all -- no wasted setup).

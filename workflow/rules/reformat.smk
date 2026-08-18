@@ -48,6 +48,7 @@ these clusters. Raises clearly, per cluster, if it hasn't.
 import sys
 
 sys.path.insert(0, os.path.join(workflow.basedir, "scripts"))
+from cell_annotations import annotation_lookup_key
 from igvf_metadata import state as igvf_state
 from igvf_metadata.context import Context, IgvfConfig
 from igvf_metadata.tables.prediction_tabular_files import build_alias as _ptf_build_alias
@@ -62,14 +63,19 @@ def portal_cell_metadata(dataset, cluster):
     "cell_qualifier":..., ...} for (dataset, cluster) from the IGVF Portal
     cell-metadata cache -- see this module's docstring for what this does
     (and doesn't) do, and for which of these fields feeds which header
-    field."""
+    field. Resolves via the cluster's cell_annotation_key override when set
+    (ATAC-only variant clusters -- the real CellAnnotation is cached under
+    the base name, not the suffixed cluster key), same as common.smk's
+    REFORMAT_ELIGIBLE_CLUSTERS gate, so a cluster that passed that gate can
+    never fail this lookup."""
     if _STATE_CONN is None:
         raise ValueError(
             "igvf.state_db_path not set in the pipeline config -- required for "
             "SampleTermID/SampleSummaryShort, sourced from the IGVF Portal "
             "cell-metadata cache (see workflow/scripts/igvf_metadata/cell_metadata.py)"
         )
-    row = igvf_state.get_cell_annotation(_STATE_CONN, dataset, cluster)
+    lookup_dataset, lookup_cluster = annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster])
+    row = igvf_state.get_cell_annotation(_STATE_CONN, lookup_dataset, lookup_cluster)
     if row is None:
         raise ValueError(
             f"{dataset}/{cluster}: no cached Cell Annotation metadata in state.db -- "
@@ -89,8 +95,14 @@ def portal_link_alias(dataset, cluster, model, variant):
 
 
 def get_reformat_output_files():
+    # REFORMAT_ELIGIBLE_CLUSTERS (common.smk), not UPLOAD_ELIGIBLE_CLUSTERS --
+    # portal_cell_metadata() below raises if a (dataset, cluster) has no
+    # cached Cell Annotation. Requesting reformat output for a
+    # quality-passing cluster that simply hasn't been portal-annotated yet
+    # would crash `rule all` outright; core generation (fragments, RNA
+    # matrices, predictions, candidates, features) is never gated this way.
     files = []
-    for dataset, cluster in UPLOAD_ELIGIBLE_CLUSTERS:
+    for dataset, cluster in REFORMAT_ELIGIBLE_CLUSTERS:
         models = config["clusters"][dataset][cluster]["models"]
         for model in models:
             threshold = get_model_threshold(config["scE2G_dir"], model)
