@@ -24,7 +24,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Filter ATAC fragments by QC barcodes and cell type.")
     p.add_argument("--qc-guide",     required=True, help="Path to gzipped QC filter guide TSV.")
     p.add_argument("--pseudobulks",  required=True, help="Path to pseudobulks folder.")
-    p.add_argument("--cell-type",    required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF').")
+    p.add_argument("--cell-type",    required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF'). Comma-separated for a merged cluster spanning multiple raw pseudobulk annotations (e.g. 'mcf7_1,mcf7_2').")
     p.add_argument("--chrom-sizes",  required=True, help="Chromosome sizes file defining the expected sort order (e.g. hg38.chrom.sizes).")
     p.add_argument("--out",          required=True, help="Output path for the filtered, sorted, bgzipped fragment file.")
     return p.parse_args()
@@ -56,20 +56,30 @@ def load_passing_barcodes(qc_guide_path: str) -> set:
 
 
 def find_fragment_dirs(pseudobulks_dir: str, cell_type: str) -> list:
-    """Return all direct child directories matching annotation-{cellType}-IGVF*.
-    Falls back to annotation-{cellType} (no subsample suffix) if no -IGVF* dirs found."""
-    pattern = os.path.join(pseudobulks_dir, f"annotation-{cell_type}-IGVF*")
-    dirs = [d for d in glob.glob(pattern) if os.path.isdir(d)]
-    if dirs:
-        print(f"[info] Found {len(dirs)} matching directories.", file=sys.stderr)
-        return sorted(dirs)
-    # Fall back to annotation-only pseudobulks (no subsample suffix)
-    fallback = os.path.join(pseudobulks_dir, f"annotation-{cell_type}")
-    if os.path.isdir(fallback):
-        print(f"[info] No -IGVF* directories found; using annotation-level pseudobulk: {fallback}", file=sys.stderr)
-        return [fallback]
-    print(f"[warning] No directories found matching: {pattern}", file=sys.stderr)
-    return []
+    """Return all direct child directories matching annotation-{cellType}-IGVF*,
+    for each comma-separated cell_type -- supports merging multiple raw
+    pseudobulk annotations into one filtered output (e.g. a cluster config
+    with pseudobulk_annotation "mcf7_1,mcf7_2" concatenates both raw
+    directory sets; a plain single cell_type behaves exactly as before).
+    Falls back per cell_type to annotation-{cellType} (no subsample suffix)
+    if no -IGVF* dirs found for that cell_type."""
+    all_dirs = []
+    for ct in cell_type.split(","):
+        ct = ct.strip()
+        pattern = os.path.join(pseudobulks_dir, f"annotation-{ct}-IGVF*")
+        dirs = sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
+        if dirs:
+            print(f"[info] Found {len(dirs)} matching directories for cell type '{ct}'.", file=sys.stderr)
+            all_dirs.extend(dirs)
+            continue
+        # Fall back to annotation-only pseudobulks (no subsample suffix)
+        fallback = os.path.join(pseudobulks_dir, f"annotation-{ct}")
+        if os.path.isdir(fallback):
+            print(f"[info] No -IGVF* directories found for '{ct}'; using annotation-level pseudobulk: {fallback}", file=sys.stderr)
+            all_dirs.append(fallback)
+        else:
+            print(f"[warning] No directories found matching: {pattern}", file=sys.stderr)
+    return all_dirs
 
 
 def filter_fragments(frag_path: str, passing_barcodes: set, out_fh, found_barcodes: set):

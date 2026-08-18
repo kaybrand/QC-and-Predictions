@@ -43,7 +43,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Concatenate and QC-filter RNA h5ad matrices by cell type.")
     p.add_argument("--qc-guide",    required=True, help="Path to gzipped QC filter guide TSV.")
     p.add_argument("--pseudobulks", required=True, help="Path to pseudobulks folder.")
-    p.add_argument("--cell-type",   required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF').")
+    p.add_argument("--cell-type",   required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF'). Comma-separated for a merged cluster spanning multiple raw pseudobulk annotations (e.g. 'mcf7_1,mcf7_2').")
     p.add_argument("--out",         required=True, help="Output path. Format is inferred from extension: .csv/.csv.gz, .h5ad/.h5, or .mtx/.mtx.gz (writes a directory).")
     p.add_argument("--ensemblIDs-as-genes", action="store_true", dest="ensembl_ids",
                    help="Retain Ensembl IDs as gene identifiers. Default: convert to gene symbols, "
@@ -135,18 +135,28 @@ def load_passing_barcodes(qc_guide_path: str) -> set:
 
 
 def find_h5ad_dirs(pseudobulks_dir: str, cell_type: str) -> list:
-    pattern = os.path.join(pseudobulks_dir, f"annotation-{cell_type}-IGVF*")
-    dirs = sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
-    if dirs:
-        print(f"[info] Found {len(dirs)} matching directories.", file=sys.stderr)
-        return dirs
-    # Fall back to annotation-only pseudobulks (no subsample suffix)
-    fallback = os.path.join(pseudobulks_dir, f"annotation-{cell_type}")
-    if os.path.isdir(fallback):
-        print(f"[info] No -IGVF* directories found; using annotation-level pseudobulk: {fallback}", file=sys.stderr)
-        return [fallback]
-    print(f"[warning] No directories found matching: {pattern}", file=sys.stderr)
-    return []
+    """Returns all direct child directories matching annotation-{cellType}-IGVF*,
+    for each comma-separated cell_type -- supports merging multiple raw
+    pseudobulk annotations into one filtered output (e.g. a cluster config
+    with pseudobulk_annotation "mcf7_1,mcf7_2" concatenates both raw
+    directory sets; a plain single cell_type behaves exactly as before)."""
+    all_dirs = []
+    for ct in cell_type.split(","):
+        ct = ct.strip()
+        pattern = os.path.join(pseudobulks_dir, f"annotation-{ct}-IGVF*")
+        dirs = sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
+        if dirs:
+            print(f"[info] Found {len(dirs)} matching directories for cell type '{ct}'.", file=sys.stderr)
+            all_dirs.extend(dirs)
+            continue
+        # Fall back to annotation-only pseudobulks (no subsample suffix)
+        fallback = os.path.join(pseudobulks_dir, f"annotation-{ct}")
+        if os.path.isdir(fallback):
+            print(f"[info] No -IGVF* directories found for '{ct}'; using annotation-level pseudobulk: {fallback}", file=sys.stderr)
+            all_dirs.append(fallback)
+        else:
+            print(f"[warning] No directories found matching: {pattern}", file=sys.stderr)
+    return all_dirs
 
 
 def collapse_to_gene_symbols(combined: ad.AnnData) -> ad.AnnData:
