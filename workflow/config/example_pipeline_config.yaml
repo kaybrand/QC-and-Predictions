@@ -7,18 +7,24 @@
 
 scE2G_dir: /oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G
 gtf: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz
-# The datafile root: {data_dir}/multiome_data, {data_dir}/plots, {data_dir}/datatables --
-# every input/output datafile this pipeline reads or writes (filtered ATAC/RNA/index
-# files, QC-guide/QC-threshold plots, per-cell-QC datatables), all rooted here. Set once,
-# independently of wherever this pipeline's own code happens to be checked out (WDIR) --
-# a worktree/branch checkout of this repo's code is not the same thing as the data
-# location, and code-directory-relative datafile paths silently break the moment those
-# two diverge (see common.smk/resolve_exclusions.py/igvf_metadata/context.py's own
-# docstrings, 2026-08-03). IGVF metadata upload artifacts (resources/igvf_metadata_state.db,
-# manifest TSVs) are NOT datafiles in this sense -- they're upload-support state for the
-# Portal destination, not Synapse-focused pipeline data, so they stay WDIR-relative /
-# independently configured (see igvf.state_db_path below) rather than living under data_dir.
+# The QC-guide INPUT root: {data_dir}/plots, {data_dir}/datatables -- pre-existing
+# QC-guide plots/QC-threshold plots and per-cell-QC datatables this pipeline READS
+# from, never writes to (2026-08-15: filtered ATAC/RNA/index outputs moved to
+# output_dir below -- data_dir is now single-purpose). Set once, independently of
+# wherever this pipeline's own code happens to be checked out (WDIR) -- a
+# worktree/branch checkout of this repo's code is not the same thing as the data
+# location, and code-directory-relative datafile paths silently break the moment
+# those two diverge (see common.smk/resolve_exclusions.py's own docstrings,
+# 2026-08-03).
 data_dir: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks
+# Consolidated OUTPUT root for everything this pipeline WRITES: filtered ATAC/RNA
+# outputs ({output_dir}/multiome_data/...), scE2G's own predictions/candidates/
+# features/QC-plots/bigwigs/bedpe tree ({output_dir}/uniformly_processed/...),
+# cluster-stats tables, Synapse manifests, and the coverage report. Relative paths
+# (like the default below) resolve against the repo root (the directory containing
+# this repo's own workflow/), not against data_dir and not against the current
+# working directory -- see workflow/scripts/pipeline_paths.py.
+output_dir: ./results
 # pseudobulks_dir for a given dataset = {pseudobulks_root}/{dataset}/pseudobulks -- always
 # the archive-extracted root (one-time-per-dataset sbatch job, per the
 # qc-filter-pseudobulks skill), even for igvf0/igvf1: the sbaek1 pseudobulk directory
@@ -35,7 +41,6 @@ scE2G_version: "1.2"
 # pipeline reformats any E2G prediction Tabular Files for IGVF Portal submission.
 igvf:
   state_db_path: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks-igvf-portal-submission/resources/igvf_metadata_state.db
-
 
 # Passed through into scE2G's own config/config.yaml, identically for every dataset in
 # this run. Every key scE2G supports under its OPTIONS / REFERENCE FILES / WORKFLOW

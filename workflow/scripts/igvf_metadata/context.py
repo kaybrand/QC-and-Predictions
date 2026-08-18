@@ -48,12 +48,16 @@ class Context:
     cluster_cfg: dict  # config["clusters"][dataset][cluster]: models, pseudobulk_annotation, qc_guide
     igvf: IgvfConfig
     scE2G_dir: str
-    data_dir: str  # config["data_dir"] -- see multiome_data_cluster_dir below
+    data_dir: str  # config["data_dir"] -- READ-ONLY now, QC-guide plots/datatables inputs only
+    output_dir: Optional[str] = None  # config["output_dir"] -- 2026-08-15: falls back to legacy
+    # scE2G_dir/data_dir-derived paths below when None, for any caller that hasn't been updated yet
     cache: dict = field(default_factory=dict)  # per-run memoization (e.g. score thresholds, one lookup per model)
     conn: Optional[object] = None  # state.db connection -- cell_metadata.get_metadata_for's cache lookup needs it
 
     @property
     def results_dir(self):
+        if self.output_dir:
+            return os.path.join(self.output_dir, "uniformly_processed")
         return os.path.join(self.scE2G_dir, "results", "uniformly_processed")
 
     @property
@@ -63,15 +67,15 @@ class Context:
     @property
     def multiome_data_cluster_dir(self):
         """The Synapse-side filtered_data location, NOT scE2G's own results
-        dir. Corrected 2026-08-03: code directory (WDIR, where this pipeline
-        happens to be checked out) and data directory (where filtered
-        ATAC/RNA/index datafiles actually live) are independent -- the code
-        directory is fixed by which worktree you're running from, but the
-        data directory is a self-consistent path the user sets once, in the
-        pipeline config (config["data_dir"]), same as pseudobulks_root.
-        Mirrors workflow/rules/common.smk's own multiome_data_dir(dataset),
-        which reads the same config value -- both now agree by construction,
-        not by coincidence of which worktree the data happens to sit in."""
+        dir. 2026-08-15: filtered ATAC/RNA/index datafiles moved to the
+        consolidated output_dir (config["output_dir"]) -- data_dir is now
+        read-only (QC-guide plots/datatables). Mirrors
+        workflow/rules/common.smk's own multiome_data_dir(dataset), which
+        reads the same config value -- both agree by construction. Falls
+        back to the legacy data_dir-based path when output_dir isn't set
+        (e.g. a caller constructed without it)."""
+        if self.output_dir:
+            return os.path.join(self.output_dir, "multiome_data", self.dataset, self.cluster)
         return os.path.join(self.data_dir, "multiome_data", self.dataset, self.cluster)
 
     def with_model(self, model):
@@ -83,6 +87,7 @@ class Context:
             self.igvf,
             self.scE2G_dir,
             self.data_dir,
+            self.output_dir,
             self.cache,
             self.conn,
         )

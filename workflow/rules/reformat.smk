@@ -82,7 +82,8 @@ def portal_link_alias(dataset, cluster, model, variant):
     """The file's own IGVF alias, via Prediction Tabular Files' own
     build_alias -- single source of truth for that formula."""
     ctx = Context(
-        dataset, cluster, model, config["clusters"][dataset][cluster], IGVF_CFG, config["scE2G_dir"], config["data_dir"]
+        dataset, cluster, model, config["clusters"][dataset][cluster], IGVF_CFG,
+        config["scE2G_dir"], config["data_dir"], OUTPUT_DIR,
     )
     return _ptf_build_alias(ctx, variant)
 

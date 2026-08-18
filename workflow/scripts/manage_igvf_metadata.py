@@ -25,6 +25,7 @@ import yaml
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
 from igvf_metadata import orchestrator, tables  # noqa: F401 (tables import registers table modules)
 from igvf_metadata.context import IgvfConfig
+from pipeline_paths import resolve_repo_relative, repo_root_from_script
 
 
 def parse_cluster_keys(raw):
@@ -95,6 +96,8 @@ def main():
         for cluster, cfg in clusters.items()
     }
 
+    output_dir = resolve_repo_relative(config.get("output_dir", "./results"), repo_root_from_script(__file__))
+
     run_kwargs = dict(
         cluster_keys=cluster_keys,
         cluster_configs=cluster_configs,
@@ -102,6 +105,7 @@ def main():
         igvf_cfg=igvf_cfg,
         scE2G_dir=config["scE2G_dir"],
         data_dir=config["data_dir"],
+        output_dir=output_dir,
         state_db_path=args.state_db,
         manifest_dir=args.manifest_dir,
         mode=args.mode,

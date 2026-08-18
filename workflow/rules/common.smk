@@ -35,6 +35,15 @@ from write_scE2G_config import (  # noqa: E402
     write_cluster_metadata_table,
     load_cluster_metadata,
 )
+from pipeline_paths import resolve_repo_relative  # noqa: E402
+
+# Consolidated OUTPUT root for everything this pipeline WRITES (filtered
+# ATAC/RNA outputs, scE2G's own results tree, Synapse manifests, cluster-stats
+# tables, the coverage report). config["data_dir"] (above) is now READ-ONLY --
+# used only to locate pre-existing QC-guide plots/datatables inputs, never
+# written to. Relative paths resolve against WDIR (this repo's own root), not
+# data_dir and not the current working directory.
+OUTPUT_DIR = resolve_repo_relative(config.get("output_dir", "./results"), WDIR)
 
 MAX_MEM_MB = 250 * 1000  # 250GB, matches scE2G_options.max_memory_allocation_mb default
 
@@ -109,7 +118,7 @@ def build_scE2G_config(config, scE2G_dir, cell_clusters_table, results_dir):
 
 
 def multiome_data_dir(dataset):
-    return os.path.join(config["data_dir"], "multiome_data", dataset)
+    return os.path.join(OUTPUT_DIR, "multiome_data", dataset)
 
 
 def pseudobulks_dir(dataset):
@@ -165,7 +174,7 @@ wildcard_constraints:
 # accordingly.
 # ---------------------------------------------------------------------------
 CONFIG_DIR = os.path.join(workflow.basedir, "config")
-RESULTS_DIR_BASE = os.path.join(config["scE2G_dir"], "results", "uniformly_processed")
+RESULTS_DIR_BASE = os.path.join(OUTPUT_DIR, "uniformly_processed")
 
 CELL_CLUSTERS_TABLES = {}
 RESULTS_DIRS = {}

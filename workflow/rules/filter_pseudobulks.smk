@@ -6,18 +6,21 @@ cluster) pair -- both are genuine wildcards, jointly constrained -- and
 ATAC-only aware: the RNA rule is simply never instantiated for a cluster
 whose models == [scATAC_powerlaw_v3].
 
-Outputs land in {data_dir}/multiome_data/{dataset}/{cluster}/, the same
+Outputs land in {output_dir}/multiome_data/{dataset}/{cluster}/, the same
 staging convention the legacy Snakefile and the qc-filter-pseudobulks skill
-use -- scE2G reads these paths via the cell_clusters table written by
-write_scE2G_config.py, not from this pipeline's own results_dir.
+used for data_dir -- scE2G reads these paths via the cell_clusters table
+written by write_scE2G_config.py, not from this pipeline's own results_dir.
 
 OUT_DIR_BASE matches common.smk's own multiome_data_dir(dataset) minus the
-{dataset} join (both read config["data_dir"]) -- corrected 2026-08-03, this
-used to be WDIR-relative (this pipeline's own code checkout), which only
-worked by coincidence when code and data lived in the same place.
+{dataset} join (both read OUTPUT_DIR) -- 2026-08-15: repointed from
+config["data_dir"] to the new consolidated OUTPUT_DIR (config["output_dir"],
+default ./results), since data_dir is now read-only (QC-guide plots/
+datatables inputs only). Before that, corrected 2026-08-03 from WDIR-relative
+(this pipeline's own code checkout), which only worked by coincidence when
+code and data lived in the same place.
 """
 
-OUT_DIR_BASE = os.path.join(config["data_dir"], "multiome_data")
+OUT_DIR_BASE = os.path.join(OUTPUT_DIR, "multiome_data")
 
 MULTIOME_CLUSTERS = [
     (d, c) for d, c in INCLUDED_CLUSTERS if config["clusters"][d][c]["models"] != ["scATAC_powerlaw_v3"]

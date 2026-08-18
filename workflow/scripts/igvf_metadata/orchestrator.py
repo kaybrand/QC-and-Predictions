@@ -157,7 +157,7 @@ def _dependency_model(dep_table_name, model_key):
     return model_key if registry.get(dep_table_name).scope == "cluster_model" else ""
 
 
-def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, table_name, variant_name):
+def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir, table_name, variant_name):
     """1 + max(round of each dependency), memoized per (dataset, cluster,
     model-or-"", table, variant) -- shared across the whole run() call so a
     dependency reused by many rows (e.g. principal_pseudobulk_set) is only
@@ -169,7 +169,7 @@ def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, 
         return cache[key]
     table = registry.get(table_name)
     variant = next(v for v in table.variants if v.name == variant_name)
-    ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, conn=conn)
+    ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir, conn=conn)
     deps = variant.depends_on(ctx)
     if not deps:
         cache[key] = 1
@@ -182,7 +182,7 @@ def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, 
         dep_model = model if registry.get(dep_table_name).scope == "cluster_model" else None
         dep_rounds.append(
             _compute_round(
-                cache, conn, dataset, cluster, dep_model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir,
+                cache, conn, dataset, cluster, dep_model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir,
                 dep_table_name, dep_variant,
             )
         )
@@ -190,7 +190,7 @@ def _compute_round(cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, 
     return cache[key]
 
 
-def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, mode, round_cache):
+def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, output_dir, mode, round_cache):
     """Returns (to_post, to_patch, to_record, counts).
     to_post/to_patch: list of dicts with keys row_id, alias, payload,
     variant, round, dataset (to_patch additionally has record_id) -- run()
@@ -212,7 +212,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
         counts[key] = counts.get(key, 0) + 1
 
     for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
-        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, conn=conn)
+        ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir, conn=conn)
         model_key = model or ""
         for variant in table.variants:
             # enabled() can do real I/O (e.g. prediction_tabular_files' score-threshold
@@ -239,7 +239,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                     break
 
             round_num = _compute_round(
-                round_cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir,
+                round_cache, conn, dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir,
                 table.name, variant.name,
             )
 
@@ -342,6 +342,7 @@ def run(
     igvf_mode=None,
     iu_register_path=portal_client.IU_REGISTER_DEFAULT_PATH,
     all_cluster_configs=None,
+    output_dir=None,
 ):
     """mode:
       "preview"  (default) -- plan + write TSVs only. No call to
@@ -386,7 +387,8 @@ def run(
     report = {}
     for table in tables:
         to_post, to_patch, to_record, counts = plan_table(
-            conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, mode, round_cache
+            conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, output_dir,
+            mode, round_cache,
         )
         log(f"{table.name}: {counts}")
         accumulator_entries.extend(to_record)
