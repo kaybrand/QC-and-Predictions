@@ -116,6 +116,7 @@ def record_discovery(conn, records, download_root, now):
             content_type=rec["content_type"],
             file_format=rec["file_format"],
             href=rec["href"],
+            s3_uri=rec["s3_uri"],
             alias=rec["alias"],
             md5sum=rec["md5sum"],
             file_size=rec["file_size"],

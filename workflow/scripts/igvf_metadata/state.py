@@ -147,6 +147,12 @@ CREATE TABLE IF NOT EXISTS portal_files (
     content_type TEXT NOT NULL,
     file_format TEXT,
     href TEXT,
+    -- The portal's own s3://igvf-files/{YYYY}/{MM}/{DD}/{uuid}/{accession}.{ext}.
+    -- Captured because it makes an upstream gap report self-contained: when a
+    -- file's S3 object is missing (upload_status "file not found"), this is the
+    -- exact key to quote to the DACC, and it is also the handle for a bulk
+    -- transfer (aws s3 / Globus) that bypasses the href redirect entirely.
+    s3_uri TEXT,
     alias TEXT,
     md5sum TEXT,
     file_size INTEGER,
@@ -191,6 +197,7 @@ CREATE INDEX IF NOT EXISTS idx_portal_files_content ON portal_files(content_type
 _ADDED_COLUMNS = {
     "portal_files": {
         "review_reasons": "TEXT",
+        "s3_uri": "TEXT",
     },
 }
 
@@ -419,6 +426,7 @@ _PORTAL_FILE_FIELDS = (
     "content_type",
     "file_format",
     "href",
+    "s3_uri",
     "alias",
     "md5sum",
     "file_size",

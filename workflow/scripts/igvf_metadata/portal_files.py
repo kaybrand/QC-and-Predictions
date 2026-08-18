@@ -290,6 +290,7 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
                     "content_type": ct,
                     "file_format": f.get("file_format"),
                     "href": f.get("href"),
+                    "s3_uri": f.get("s3_uri"),
                     "alias": (f.get("aliases") or [None])[0],
                     "md5sum": f.get("md5sum"),
                     "file_size": f.get("file_size"),
