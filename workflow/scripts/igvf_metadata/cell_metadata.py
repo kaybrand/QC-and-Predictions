@@ -40,6 +40,11 @@ pseudobulk row in the same multireport response already carries this exact
 cell_annotation value (the portal auto-populates that field on a principal
 upload) -- no local upload-ledger lookup needed for that second condition.
 
+Primary/principal classification moved to pseudobulk_sets.classify (2026-08-17)
+-- shared with portal_files.py's download discovery, so the one rule that
+decides what a pseudobulk set IS cannot drift between the two consumers. See
+that module for why file_set_type is NOT a usable discriminator.
+
 Two different kinds of per-scope anomaly get two different treatments
 (2026-07-24). A local subsample missing from its portal group, or
 disagreement on (cl_id, term_id, term_name) across a scope's contributing
@@ -83,7 +88,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from . import state, subsamples
+from . import pseudobulk_sets, state, subsamples
 from .context import Context
 
 CACHE_TTL_HOURS = 24
@@ -93,7 +98,7 @@ SHAREABLE_TSV_NAME = "cell_annotation_table.tsv"
 # Confirmed against a real production call (2026-07-22): input_file_sets/samples/cell_type
 # all come back as fully-embedded objects regardless of which sub-fields are requested here
 # (no "@type" sub-field ever appears on input_file_sets entries -- classification instead
-# uses their "@id" path prefix, see _classify). limit=all is required: the multireport
+# uses their "@id" path prefix, see pseudobulk_sets.classify). limit=all is required: the multireport
 # endpoint otherwise silently caps at a default page size (25, confirmed) instead of
 # returning every PseudobulkSet.
 _MULTIREPORT_QUERY = (
@@ -132,22 +137,6 @@ def _is_stale(last_fetch):
         return True
     age = datetime.now(timezone.utc) - datetime.fromisoformat(last_fetch)
     return age.total_seconds() > CACHE_TTL_HOURS * 3600
-
-
-def _classify(row):
-    """"primary" (input_file_sets all AnalysisSets), "principal" (all
-    PseudobulkSets), or None (ambiguous/unparseable -- caller skips it).
-    input_file_sets entries never carry an "@type" sub-field, confirmed
-    against a real production call (2026-07-22) -- classify by "@id" path
-    prefix instead ("/analysis-sets/..." vs "/pseudobulk-sets/...")."""
-    ids = [entry.get("@id", "") for entry in row.get("input_file_sets") or [] if isinstance(entry, dict)]
-    if not ids:
-        return None
-    if all(i.startswith("/analysis-sets/") for i in ids):
-        return "primary"
-    if all(i.startswith("/pseudobulk-sets/") for i in ids):
-        return "principal"
-    return None
 
 
 def _cl_id_from_cell_type(cell_type):
@@ -239,7 +228,7 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
     saved_primary_count = 0
     skipped_no_alias = 0
     for row in rows:
-        kind = _classify(row)
+        kind = pseudobulk_sets.classify(row)
         if kind == "principal":
             annotation = row.get("cell_annotation")
             aliases = row.get("aliases") or []

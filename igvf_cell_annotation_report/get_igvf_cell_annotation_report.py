@@ -15,8 +15,10 @@ here so the two can be kept in sync if the portal's own schema changes:
   - the multireport GET (query string + auth pattern):
     workflow/scripts/igvf_metadata/portal_client.py's PortalReader.get_multireport
     and workflow/scripts/igvf_metadata/cell_metadata.py's _MULTIREPORT_QUERY.
-  - primary/principal classification and cell_type field extraction:
-    cell_metadata.py's _classify/_term_id_from_cell_type/_term_name_from_cell_type.
+  - primary/principal classification: workflow/scripts/igvf_metadata/
+    pseudobulk_sets.py's classify() (was cell_metadata._classify until
+    2026-08-17). Cell_type field extraction: cell_metadata.py's
+    _term_id_from_cell_type/_term_name_from_cell_type.
   - the most-contributing-subsample tie-break and its subsample-frequency
     source (only used in QC-guide mode, see below):
     subsamples.py's subsamples_by_frequency and cell_metadata.refresh_if_stale.
@@ -117,7 +119,7 @@ def fetch_multireport(igvf_mode):
 def _classify(row):
     """"primary" (input_file_sets all AnalysisSets), "principal" (all
     PseudobulkSets), or None (ambiguous/unparseable). Mirrors
-    cell_metadata._classify -- input_file_sets entries never carry an
+    igvf_metadata/pseudobulk_sets.py's classify() -- input_file_sets entries never carry an
     "@type" sub-field, confirmed against a real production call, so
     classification is by "@id" path prefix instead."""
     ids = [entry.get("@id", "") for entry in row.get("input_file_sets") or [] if isinstance(entry, dict)]
