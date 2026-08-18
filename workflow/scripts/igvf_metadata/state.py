@@ -119,6 +119,56 @@ CREATE TABLE IF NOT EXISTS cell_metadata_principal_pseudobulks (
     cell_annotation TEXT,
     fetched_at TEXT NOT NULL
 );
+
+-- Portal File objects belonging to PRIMARY pseudobulk sets, and the state of
+-- downloading each one (2026-08-17). See portal_files.py for the discovery
+-- query and download_portal_pseudobulks.py for the fetch loop.
+--
+-- Keyed on the portal's own file `accession`, NOT on (dataset, cluster) like
+-- every other table here: `dataset` is an informal local label (igvf0..igvf18)
+-- slated to be replaced by each dataset's principal analysis set accession
+-- (see context.make_alias's UNRESOLVED note). A (dataset, ...) key would
+-- orphan every row the day that rename lands; an accession never moves.
+-- principal_analysis_set is captured now for the same reason -- it is the
+-- future identity, available for free today from input_file_sets.
+--
+-- dataset/annotation/subsample are RESOLVED values, parsed from the file's
+-- own submitted_file_name (the only field that carries all three), and are
+-- nullable: a set whose submitted_file_name doesn't follow the convention is
+-- recorded with them NULL and reported, never guessed at and never dropped.
+--
+-- href/file_size are nullable too -- href is a calculated portal field and a
+-- not-yet-uploaded file may have neither.
+CREATE TABLE IF NOT EXISTS portal_files (
+    accession TEXT PRIMARY KEY,
+    file_set TEXT,
+    principal_analysis_set TEXT,
+    lab TEXT,
+    content_type TEXT NOT NULL,
+    file_format TEXT,
+    href TEXT,
+    alias TEXT,
+    md5sum TEXT,
+    file_size INTEGER,
+    portal_status TEXT,
+    upload_status TEXT,
+    submitted_file_name TEXT,
+    dataset TEXT,
+    annotation TEXT,
+    subsample TEXT,
+    local_path TEXT,
+    -- pending | done | md5_mismatch | failed | needs_review | skipped
+    download_state TEXT NOT NULL DEFAULT 'pending',
+    bytes_written INTEGER,
+    md5_observed TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    first_seen_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_portal_files_state   ON portal_files(download_state);
+CREATE INDEX IF NOT EXISTS idx_portal_files_scope   ON portal_files(dataset, annotation, subsample);
+CREATE INDEX IF NOT EXISTS idx_portal_files_content ON portal_files(content_type);
 """
 
 
@@ -323,6 +373,96 @@ def upsert_principal_pseudobulk(conn, alias, cell_annotation, now):
 
 def all_principal_pseudobulks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_principal_pseudobulks").fetchall()]
+
+
+_PORTAL_FILE_FIELDS = (
+    "file_set",
+    "principal_analysis_set",
+    "lab",
+    "content_type",
+    "file_format",
+    "href",
+    "alias",
+    "md5sum",
+    "file_size",
+    "portal_status",
+    "upload_status",
+    "submitted_file_name",
+    "dataset",
+    "annotation",
+    "subsample",
+    "local_path",
+)
+
+
+def upsert_portal_file(conn, accession, now, **fields):
+    """Records what the portal currently says about one File, WITHOUT touching
+    any download-progress column (download_state/bytes_written/md5_observed/
+    attempt_count/last_error). Discovery and downloading are separate passes:
+    re-running discovery must refresh portal metadata -- including a changed
+    md5sum, which is exactly how an updated upstream file gets noticed -- while
+    leaving an in-flight or completed download's own bookkeeping intact.
+
+    Deciding whether a refreshed md5sum invalidates an existing download is the
+    downloader's job (see download_portal_pseudobulks.needs_download), not this
+    function's: doing it here would mean a plain --dry-run discovery pass
+    silently reset completed rows."""
+    unknown = set(fields) - set(_PORTAL_FILE_FIELDS)
+    if unknown:
+        raise ValueError(f"unknown portal_files field(s): {sorted(unknown)}")
+    cols = [c for c in _PORTAL_FILE_FIELDS if c in fields]
+    assignments = ", ".join(f"{c}=excluded.{c}" for c in cols)
+    placeholders = ", ".join("?" for _ in cols)
+    with transaction(conn):
+        conn.execute(
+            f"""INSERT INTO portal_files (accession, {', '.join(cols)}, first_seen_at, updated_at)
+                VALUES (?, {placeholders}, ?, ?)
+                ON CONFLICT(accession) DO UPDATE SET {assignments}, updated_at=excluded.updated_at""",
+            (accession, *[fields[c] for c in cols], now, now),
+        )
+
+
+def record_download_result(
+    conn, accession, download_state, now, bytes_written=None, md5_observed=None, error=None, bump_attempt=True
+):
+    """The download-progress counterpart to upsert_portal_file. attempt_count is
+    incremented by default; pass bump_attempt=False for a state change that
+    wasn't an actual transfer attempt (e.g. marking a row 'skipped')."""
+    with transaction(conn):
+        conn.execute(
+            f"""UPDATE portal_files
+                SET download_state=?, bytes_written=COALESCE(?, bytes_written),
+                    md5_observed=COALESCE(?, md5_observed), last_error=?,
+                    attempt_count=attempt_count+{1 if bump_attempt else 0}, updated_at=?
+                WHERE accession=?""",
+            (download_state, bytes_written, md5_observed, error, now, accession),
+        )
+
+
+def get_portal_file(conn, accession):
+    row = conn.execute("SELECT * FROM portal_files WHERE accession=?", (accession,)).fetchone()
+    return dict(row) if row else None
+
+
+def all_portal_files(conn, dataset=None, content_type=None, download_state=None):
+    where, params = [], []
+    for col, val in (("dataset", dataset), ("content_type", content_type), ("download_state", download_state)):
+        if val is not None:
+            where.append(f"{col}=?")
+            params.append(val)
+    sql = "SELECT * FROM portal_files"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return [dict(r) for r in conn.execute(sql + " ORDER BY accession", params).fetchall()]
+
+
+def portal_file_state_counts(conn):
+    return {
+        r["download_state"]: r["n"]
+        for r in conn.execute(
+            "SELECT download_state, COUNT(*) AS n FROM portal_files GROUP BY download_state"
+        ).fetchall()
+    }
 
 
 def mark_excluded(conn, dataset, cluster, reason, now):
