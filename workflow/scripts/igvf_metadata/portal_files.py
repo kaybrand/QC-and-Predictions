@@ -240,6 +240,15 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
         "primary_by_lab": Counter(),
         "files_by_content_type": Counter(),
         "files_excluded_by_status": Counter(),
+        # Surfaced because it is the only field that says anything about whether
+        # the BYTES exist -- href and s3_uri are calculated from record identity
+        # and are present even for a file whose S3 object 404s (verified across
+        # all 9832 files on every PseudobulkSet: both fields present 100% of the
+        # time, for every upload_status value). "validated" is the healthy value;
+        # "invalidated" means the portal's own checkfiles rejected the file, and
+        # 477 Kundaje `peaks` files are in that state today -- out of scope for us,
+        # but if a TARGET content_type ever lands there it must not pass silently.
+        "upload_status": Counter(),
         "sets_missing_content_type": Counter(),
         "review_reasons": Counter(),
         "datasets": Counter(),
@@ -340,6 +349,7 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
         # set_missing tag above has been attached.
         for rec in set_records:
             report["files_by_content_type"][rec["content_type"]] += 1
+            report["upload_status"][rec["upload_status"]] += 1
             if rec["dataset"]:
                 report["datasets"][rec["dataset"]] += 1
             for reason in rec["review_reasons"]:
@@ -360,6 +370,15 @@ def log_report(report):
     log(f"primary sets by lab: {dict(report['primary_by_lab'])}")
     log(f"primary sets selected: {report['sets_selected']}")
     log(f"files by content_type: {dict(report['files_by_content_type'])}")
+    upload = dict(report["upload_status"])
+    log(f"files by portal upload_status: {upload}")
+    unhealthy = {k: v for k, v in upload.items() if k != "validated"}
+    if unhealthy:
+        log(
+            f"  WARNING: {sum(unhealthy.values())} selected file(s) are not upload_status "
+            f"'validated': {unhealthy} -- 'file not found' will 404, 'invalidated' means the "
+            "portal's checkfiles rejected the upload"
+        )
     if report["files_excluded_by_status"]:
         log(f"  files excluded by status: {dict(report['files_excluded_by_status'])}")
     if report["sets_with_no_target_files"]:
