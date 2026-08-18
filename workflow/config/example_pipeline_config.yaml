@@ -17,6 +17,13 @@ gtf: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_proc
 # those two diverge (see common.smk/resolve_exclusions.py's own docstrings,
 # 2026-08-03).
 data_dir: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks
+# OPTIONAL. Where {dataset}_data/{cluster}_per_cell_qc.tsv lives. Defaults to
+# {data_dir}/datatables, and is read ONLY for clusters marked `prefiltered: true`
+# (see the clusters: block below), so most configs never need it. Point it at a
+# tree rebuilt by workflow/scripts/build_qc_datatables.py from portal-downloaded
+# pseudobulks -- e.g. {output_dir}/QC_datatables -- to stop depending on the
+# legacy hand-made tables under the read-only data_dir.
+# qc_datatables_dir: ./results/QC_datatables
 # Consolidated OUTPUT root for everything this pipeline WRITES: filtered ATAC/RNA
 # outputs ({output_dir}/multiome_data/...), scE2G's own predictions/candidates/
 # features/QC-plots/bigwigs/bedpe tree ({output_dir}/uniformly_processed/...),
@@ -111,3 +118,35 @@ clusters:
   #     models: [scATAC_powerlaw_v3]
   #     cell_annotation_key: pancreatic_delta_d32
   #     igvf_manifest_excluded: true
+  #
+  # prefiltered: OPTIONAL, default false. Chooses where the quality gate
+  # (resolve_exclusions.py) reads this cluster's cell_count/fragments_total/
+  # umi_count from. Leave it unset for every normal cluster.
+  #
+  #   unset/false -- read plots/{dataset}/{cluster}/
+  #                  filtered_cell_subsample_metrics.tsv, the POST-filter
+  #                  aggregate plot_per_cell_qc.R writes next to the QC guide.
+  #                  If it is missing the cluster is excluded with reason
+  #                  "missing_metrics" -- deliberately NOT falling back to
+  #                  unfiltered numbers.
+  #   true        -- this cluster's barcodes were filtered upstream and no
+  #                  plot_per_cell_qc.R metrics file exists, so derive depth by
+  #                  joining the guide's barcodes against the UNFILTERED
+  #                  {qc_datatables_dir}/{dataset}_data/{cluster}_per_cell_qc.tsv.
+  #
+  # The gate decides what gets predicted on and shared, so it must see
+  # post-filter depth; the datatable holds every cell pre-QC and is only
+  # comparable after that join. Setting this flag when a metrics file could
+  # exist instead silently changes what the thresholds mean.
+  #
+  # A MERGED cluster is the usual reason to need it -- plot_per_cell_qc.R runs
+  # per component, so no metrics file exists under the merged name. Preferred
+  # fix is to build one with workflow/scripts/merge_cluster_metrics.py and leave
+  # this flag off; that reproduces the same three numbers and survives config
+  # regeneration, which a hand-added flag in a generated block does not.
+  # igvf18:
+  #   mcf7:
+  #     pseudobulk_annotation: mcf7_1,mcf7_2
+  #     qc_guide: /oak/.../plots/igvf18/mcf7/filtered_barcodes_with_subsamples.tsv.gz
+  #     models: [multiome_powerlaw_v3, scATAC_powerlaw_v3]
+  #     prefiltered: true

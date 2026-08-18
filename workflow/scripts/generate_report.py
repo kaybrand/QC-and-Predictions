@@ -99,7 +99,12 @@ def reformatted(output_dir, dataset, cluster):
 
 
 def derive_status(exclusion_reason, quality_pass, has_annotation, has_predictions, is_reformatted):
-    if exclusion_reason in ("missing_qc_guide", "missing_per_cell_qc_table"):
+    # "missing_metrics" (2026-08-17) joins these: a cluster with no
+    # filtered_cell_subsample_metrics.tsv is missing a QC-filtering product, same
+    # class of gap as a missing guide. Its usual cause is a merged cluster, for
+    # which plot_per_cell_qc.R never runs under the merged name -- fixed by
+    # merge_cluster_metrics.py, not by relaxing the gate.
+    if exclusion_reason in ("missing_qc_guide", "missing_metrics", "missing_per_cell_qc_table"):
         return "missing-qc-guide"
     if not quality_pass:
         return "excluded-quality"

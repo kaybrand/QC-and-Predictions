@@ -45,8 +45,13 @@ def _stats_from_subsample_metrics(metrics_path):
 
 
 def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
-    """Fallback for a non-default QC guide: join barcodes against the merged
-    per-cluster per_cell_qc.tsv table and sum num_frags/rna_read_count."""
+    """For a `prefiltered: true` cluster only: join the guide's barcodes against
+    the UNFILTERED per-cluster per_cell_qc.tsv and sum num_frags/rna_read_count.
+
+    The join is what makes this comparable to the metrics-file numbers -- the
+    datatable itself holds every cell pre-QC, so summing it wholesale would
+    overstate depth badly. Requires `prefiltered: true` precisely because
+    getting that distinction wrong silently inflates a quality gate."""
     barcodes = _read_qc_guide_barcodes(qc_guide_path)
     cell_count = fragments_total = umi_count = 0
     with open(per_cell_qc_path) as f:
@@ -58,23 +63,52 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
     return cell_count, fragments_total, umi_count
 
 
-def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna):
+def compute_cluster_stats(
+    plots_dir, datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna,
+    prefiltered=False,
+):
     """
     Returns (stats, reason). stats is a dict {cell_count, fragments_total,
     umi_count}, or None if the required source files don't exist yet.
-    reason is "ok" on success, else "missing_qc_guide" (no QC guide file at
-    all) or "missing_per_cell_qc_table" (QC guide exists, but the joined
-    per-cell-QC table a non-default guide needs doesn't) -- distinct failure
-    modes a caller (e.g. the coverage report) needs to tell apart.
+    reason is "ok" on success, else one of "missing_qc_guide",
+    "missing_metrics" or "missing_per_cell_qc_table" -- distinct failure modes a
+    caller (e.g. the coverage report) needs to tell apart.
+
+    Which source is used is decided by the cluster's own `prefiltered` config
+    flag, NOT by which files happen to be present:
+
+      prefiltered False (default) -- REQUIRE
+          plots/{dataset}/{cluster}/filtered_cell_subsample_metrics.tsv,
+          the post-filter aggregate plot_per_cell_qc.R writes alongside the QC
+          guide. If it is absent, report "missing_metrics" and let the cluster
+          be excluded.
+      prefiltered True -- this cluster's barcodes were filtered upstream and no
+          plot_per_cell_qc.R metrics file exists, so derive depth from the
+          UNFILTERED datatable joined against the guide's barcodes.
+
+    This used to be implicit: `if guide has the default name AND a metrics file
+    exists -> metrics, else -> datatable join`. That silently substituted
+    unfiltered-derived numbers whenever the metrics file was merely missing,
+    which is the wrong basis for a gate that decides what gets predicted on and
+    shared. Measured over all 156 configured clusters, every one of the 7 taking
+    the old fallback had the DEFAULT guide name and fell through only on the
+    absent metrics file -- so the guide-name half of that condition never
+    selected anything, and the intent it encoded ("this cluster was filtered
+    differently") is now stated directly by the flag instead of inferred.
 
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
     """
-    qc_guide_name = os.path.basename(qc_guide_path)
     cluster_plots_dir = os.path.join(plots_dir, dataset, cluster)
     metrics_path = os.path.join(cluster_plots_dir, "filtered_cell_subsample_metrics.tsv")
 
-    if qc_guide_name == DEFAULT_QC_GUIDE_NAME and os.path.exists(metrics_path):
+    if not prefiltered:
+        if not os.path.exists(metrics_path):
+            # Deliberately NOT falling back to the unfiltered datatable. For a
+            # merged cluster this is expected -- plot_per_cell_qc.R never runs
+            # under the merged name -- and the fix is merge_cluster_metrics.py,
+            # which reproduces the real post-filter numbers exactly.
+            return None, "missing_metrics"
         cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(metrics_path)
     else:
         if not os.path.exists(qc_guide_path):
@@ -129,7 +163,11 @@ def resolve_exclusions(config, data_dir):
     place.
     """
     plots_dir = os.path.join(data_dir, "plots")
-    datatables_dir = os.path.join(data_dir, "datatables")
+    # Only read for clusters marked `prefiltered: true`. Overridable via
+    # config["qc_datatables_dir"] so a tree rebuilt by build_qc_datatables.py can
+    # be used instead of the legacy one under the read-only data_dir; defaults to
+    # the historical location so existing configs behave identically.
+    datatables_dir = config.get("qc_datatables_dir") or os.path.join(data_dir, "datatables")
 
     exclusion_cfg = config.get("exclusion", {})
     user_specified = _parse_qualified_names(exclusion_cfg.get("user_specified", []))
@@ -150,6 +188,7 @@ def resolve_exclusions(config, data_dir):
         stats, stat_reason = compute_cluster_stats(
             plots_dir, datatables_dir, dataset, cluster,
             cluster_cfg["pseudobulk_annotation"], cluster_cfg["qc_guide"], has_rna,
+            prefiltered=bool(cluster_cfg.get("prefiltered", False)),
         )
 
         if key in user_specified:
@@ -162,8 +201,9 @@ def resolve_exclusions(config, data_dir):
             # rna_count_matrix both require it as an input Snakemake can't
             # produce), so this is a real exclusion, not just an unresolved
             # quality check -- distinguished from quality-threshold failures
-            # via `reason` (missing_qc_guide/missing_per_cell_qc_table vs
-            # below_min_*), which the coverage report keys off of.
+            # via `reason` (missing_qc_guide/missing_metrics/
+            # missing_per_cell_qc_table vs below_min_*), which the coverage
+            # report keys off of.
             excluded_clusters.add(key)
             reason = stat_reason
         elif stats["cell_count"] < min_cell_count:
