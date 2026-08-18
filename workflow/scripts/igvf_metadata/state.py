@@ -177,6 +177,37 @@ CREATE INDEX IF NOT EXISTS idx_portal_files_content ON portal_files(content_type
 """
 
 
+# Columns added to a table AFTER it first shipped. CREATE TABLE IF NOT EXISTS in
+# SCHEMA above is a no-op once a table exists, so it can NEVER add a column to an
+# existing database -- a trap that bit for real (2026-08-17: portal_files had
+# already been created by one run, and the next run, with review_reasons added to
+# SCHEMA, failed with "table portal_files has no column named review_reasons").
+# Anything added to an existing table must be listed here as well as in SCHEMA.
+#
+# ALTER TABLE ... ADD COLUMN only appends a nullable/defaulted column, which is
+# exactly the safe subset: it never rewrites or reorders existing rows. A change
+# that needs more than that (dropping, retyping, adding a constraint) is a real
+# migration and does not belong in this dict.
+_ADDED_COLUMNS = {
+    "portal_files": {
+        "review_reasons": "TEXT",
+    },
+}
+
+
+def _apply_column_migrations(conn):
+    """Idempotently add any column in _ADDED_COLUMNS that this database lacks.
+    Runs on every connect, like executescript(SCHEMA) -- cheap (one PRAGMA per
+    table) and a no-op once applied."""
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue  # table doesn't exist yet; SCHEMA just created it in full
+        for column, decl in columns.items():
+            if column not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def connect(db_path: str) -> sqlite3.Connection:
     dirname = os.path.dirname(db_path)
     if dirname:
@@ -186,6 +217,7 @@ def connect(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
+    _apply_column_migrations(conn)
     conn.commit()
     return conn
 
