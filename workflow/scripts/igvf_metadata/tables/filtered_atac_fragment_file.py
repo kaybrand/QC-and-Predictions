@@ -37,6 +37,12 @@ chrom-sizes file workflow/rules/filter_pseudobulks.smk passes as
 filter_atac_fragments.py's --chrom-sizes
 (reference/IGVF.DACC.GRCh38.chrom.sizes.tsv). Resolved 2026-08-03:
 IGVFFI6788CPPS.
+
+2026-08-13 update: IGVFFI6788CPPS alone left live records missing a
+required reference file (portal-side validation flagged them invalidated).
+IGVFFI0653VCGH -- despite the 2026-07-20 note above ruling it out as this
+table's own reference -- is in fact also required here; reference_files is
+now both IGVFFI0653VCGH and IGVFFI6788CPPS.
 """
 
 import os
@@ -47,8 +53,9 @@ from ..context import make_alias
 TABLE_NAME = "filtered_atac_fragment_file"
 
 # The chrom-sizes file filter_atac_fragments.py's --chrom-sizes flag reads
-# (reference/IGVF.DACC.GRCh38.chrom.sizes.tsv) -- confirmed 2026-08-03.
-_CHROM_SIZES_REFERENCE_FILE = "IGVFFI6788CPPS"
+# (reference/IGVF.DACC.GRCh38.chrom.sizes.tsv), plus IGVFFI0653VCGH --
+# both required as of 2026-08-13 (see module docstring).
+_REFERENCE_FILES = ["IGVFFI0653VCGH", "IGVFFI6788CPPS"]
 
 
 def build_alias(ctx, variant_name):
@@ -73,7 +80,7 @@ def _row(ctx):
         "file_format_type": "bed3+",
         "content_type": "fragments",
         "file_format_specifications": "/documents/db2a6dd0-cc1d-439e-a610-f9f1d04cfd82/",
-        "reference_files": [_CHROM_SIZES_REFERENCE_FILE],
+        "reference_files": _REFERENCE_FILES,
         "analysis_step_version": refs.qc_guide_to_atac_fragment_analysis_step_version_alias(ctx),
         "derived_from": ",".join(derived_from_parts),
         "description": f"Filtered ATAC fragment file containing reads from cells annotated as {ctx.cluster}",
