@@ -60,9 +60,12 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
 
 def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna):
     """
-    Returns a dict {cell_count, fragments_total, umi_count} for one
-    (dataset, cluster), or None if none of the required source files exist
-    yet (e.g. a brand-new cluster whose QC guide was just created).
+    Returns (stats, reason). stats is a dict {cell_count, fragments_total,
+    umi_count}, or None if the required source files don't exist yet.
+    reason is "ok" on success, else "missing_qc_guide" (no QC guide file at
+    all) or "missing_per_cell_qc_table" (QC guide exists, but the joined
+    per-cell-QC table a non-default guide needs doesn't) -- distinct failure
+    modes a caller (e.g. the coverage report) needs to tell apart.
 
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
@@ -74,16 +77,25 @@ def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, pseudobul
     if qc_guide_name == DEFAULT_QC_GUIDE_NAME and os.path.exists(metrics_path):
         cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(metrics_path)
     else:
-        per_cell_qc_path = os.path.join(datatables_dir, f"{dataset}_data", f"{pseudobulk_annotation}_per_cell_qc.tsv")
-        if not os.path.exists(qc_guide_path) or not os.path.exists(per_cell_qc_path):
-            return None
+        if not os.path.exists(qc_guide_path):
+            return None, "missing_qc_guide"
+        # Keyed by `cluster` (the cluster's own identity), not
+        # pseudobulk_annotation -- for a merged cluster (comma-separated
+        # pseudobulk_annotation, e.g. igvf18's mcf7 = mcf7_1 + mcf7_2) this
+        # expects a single pre-built mcf7_per_cell_qc.tsv, not one per raw
+        # source name. For every other cluster `cluster` == `pseudobulk_annotation`,
+        # so this is unchanged from before.
+        per_cell_qc_path = os.path.join(datatables_dir, f"{dataset}_data", f"{cluster}_per_cell_qc.tsv")
+        if not os.path.exists(per_cell_qc_path):
+            return None, "missing_per_cell_qc_table"
         cell_count, fragments_total, umi_count = _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path)
 
-    return {
+    stats = {
         "cell_count": cell_count,
         "fragments_total": fragments_total,
         "umi_count": umi_count if has_rna else None,
     }
+    return stats, "ok"
 
 
 def _iter_cluster_configs(clusters_by_dataset):
@@ -135,26 +147,43 @@ def resolve_exclusions(config, data_dir):
         key = (dataset, cluster)
         all_clusters.add(key)
         has_rna = cluster_cfg["models"] != ["scATAC_powerlaw_v3"]
-        stats = compute_cluster_stats(
+        stats, stat_reason = compute_cluster_stats(
             plots_dir, datatables_dir, dataset, cluster,
             cluster_cfg["pseudobulk_annotation"], cluster_cfg["qc_guide"], has_rna,
         )
-        stats_by_cluster[key] = stats
 
         if key in user_specified:
             excluded_clusters.add(key)
-            continue
-
-        if stats is None:
-            # No stats available yet (brand-new cluster) -- only user_specified applies.
-            continue
-
-        if stats["cell_count"] < min_cell_count:
+            reason = "user_specified"
+        elif stats is None:
+            # No stats available yet (brand-new cluster, or missing QC-guide
+            # inputs) -- exclude it. A cluster with no QC guide on disk can't
+            # mechanically be processed at all (atac_fragment_file/
+            # rna_count_matrix both require it as an input Snakemake can't
+            # produce), so this is a real exclusion, not just an unresolved
+            # quality check -- distinguished from quality-threshold failures
+            # via `reason` (missing_qc_guide/missing_per_cell_qc_table vs
+            # below_min_*), which the coverage report keys off of.
             excluded_clusters.add(key)
+            reason = stat_reason
+        elif stats["cell_count"] < min_cell_count:
+            excluded_clusters.add(key)
+            reason = "below_min_cell_count"
         elif stats["fragments_total"] < min_fragments_total:
             excluded_clusters.add(key)
+            reason = "below_min_fragments_total"
         elif stats["umi_count"] is not None and stats["umi_count"] < min_umi_count:
             excluded_clusters.add(key)
+            reason = "below_min_umi_count"
+        else:
+            reason = "pass"
+
+        stats_by_cluster[key] = {
+            "cell_count": stats["cell_count"] if stats else None,
+            "fragments_total": stats["fragments_total"] if stats else None,
+            "umi_count": stats["umi_count"] if stats else None,
+            "reason": reason,
+        }
 
     if process_excluded_no_upload:
         included_clusters = all_clusters
@@ -163,3 +192,24 @@ def resolve_exclusions(config, data_dir):
     upload_eligible_clusters = included_clusters - excluded_clusters
 
     return included_clusters, upload_eligible_clusters, excluded_clusters, stats_by_cluster
+
+
+CLUSTER_STATS_HEADER = ["dataset", "cluster", "cell_count", "fragments_total", "umi_count", "reason"]
+
+
+def write_cluster_stats_table(dataset, stats_by_cluster, out_dir):
+    """Deterministic full overwrite per dataset -- unlike write_scE2G_config.py's
+    tables, there's no cross-invocation accumulation to merge, so a plain
+    temp-file + os.replace is enough (no flock needed): every worker node that
+    re-parses this Snakefile computes byte-identical content for the same
+    dataset, so the only real hazard is a torn read, which os.replace avoids."""
+    path = os.path.join(out_dir, f"{dataset}_cluster_stats.tsv")
+    os.makedirs(out_dir, exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    with open(tmp, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CLUSTER_STATS_HEADER, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for (ds, cluster), row in sorted(stats_by_cluster.items()):
+            if ds == dataset:
+                writer.writerow({"dataset": ds, "cluster": cluster, **row})
+    os.replace(tmp, path)

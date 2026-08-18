@@ -29,7 +29,7 @@ import yaml
 WDIR = os.path.dirname(workflow.basedir)
 
 sys.path.insert(0, os.path.join(workflow.basedir, "scripts"))
-from resolve_exclusions import resolve_exclusions  # noqa: E402
+from resolve_exclusions import resolve_exclusions, write_cluster_stats_table  # noqa: E402
 from write_scE2G_config import (  # noqa: E402
     write_cell_clusters_table,
     write_cluster_metadata_table,
@@ -138,6 +138,17 @@ if not config.get("exclusion", {}).get("process_excluded_no_upload", False):
 else:
     print(f"[QC-and-Predictions] Processing (incl. excluded, no-upload) clusters: {sorted(INCLUDED_CLUSTERS)}")
     print(f"[QC-and-Predictions] Upload-eligible clusters: {sorted(UPLOAD_ELIGIBLE_CLUSTERS)}")
+
+# Cluster-stats persistence -- CLUSTER_STATS above is otherwise computed and
+# discarded every parse. Write it out at PARSE time (including on `-n` dry
+# runs) so the coverage report (generate_report.py) can consume real
+# quality-gating data for every configured cluster without recomputing it or
+# requiring real execution. Every configured dataset gets a table, not just
+# ones with passing clusters -- a dataset whose every cluster failed quality
+# still needs its stats reported.
+CLUSTER_STATS_DIR = os.path.join(OUTPUT_DIR, "cluster_stats")
+for _stats_dataset in config["clusters"]:
+    write_cluster_stats_table(_stats_dataset, CLUSTER_STATS, CLUSTER_STATS_DIR)
 
 # Distinct datasets actually needed this run (a dataset whose clusters were all
 # excluded gets no scE2G module instance at all -- no wasted setup).
