@@ -20,6 +20,27 @@ Usage:
 See workflow/config/example_pipeline_config.yaml for the config schema.
 """
 
+# On this account, conda activation appends the activated env's bin/ near the
+# end of $PATH instead of prepending it (confirmed 2026-08-13 -- a nested
+# conda-activation state left over from an earlier `conda activate` combined
+# with this account's Lmod-managed $PATH entries), so bare `python`/`python3`
+# in a rule's shell: block can silently resolve to this system's own
+# /usr/bin/python (2.7) instead of the activated env's. $CONDA_PREFIX itself
+# is still set correctly by activation regardless of $PATH ordering, so
+# shadow `python`/`python3` with a shell function that calls it directly when
+# set. One shell.prefix() here covers every rule with a shell: block across
+# every included .smk file (they share this Workflow) -- no per-rule edits
+# needed. If $CONDA_PREFIX is unset (e.g. --use-conda wasn't passed), the
+# function is never defined and python/python3 fall through to normal $PATH
+# lookup exactly as before -- no change in that case, same failure mode as
+# always.
+shell.prefix(
+    'if [ -n "$CONDA_PREFIX" ]; then '
+    'python() {{ "$CONDA_PREFIX/bin/python" "$@"; }}; '
+    'python3() {{ "$CONDA_PREFIX/bin/python" "$@"; }}; '
+    'fi\n'
+)
+
 include: "rules/common.smk"
 
 # scE2G is an external, separately-maintained repo -- imported as a module
