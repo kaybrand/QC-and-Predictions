@@ -43,6 +43,7 @@ Session, not on a manually-built header.
 
 import hashlib
 import os
+import re
 import socket
 import sys
 import time
@@ -57,6 +58,23 @@ MAX_STREAM_ATTEMPTS = 5
 
 def log(msg):
     print(f"[downloader] {msg}", file=sys.stderr)
+
+
+def redact(text):
+    """Strip query strings out of any URL in a message before it is logged or
+    stored.
+
+    `href` redirects to a PRESIGNED S3 URL whose query string carries
+    AWSAccessKeyId, Signature and x-amz-security-token. requests puts the full
+    final URL into its exception text, so an unredacted error ends up in the
+    state.db ledger and the job log -- which is how a temporary AWS credential
+    got persisted to disk on the first full run. The tokens are short-lived and
+    object-scoped, and are not the IGVF key pair, but they have no business being
+    written down. The path is kept, since that is the part with diagnostic value.
+    """
+    if not text:
+        return text
+    return re.sub(r"(https?://[^\s?]+)\?[^\s]*", r"\1?<redacted>", str(text))
 
 
 class Result:
@@ -200,7 +218,7 @@ def _stream_to_part(session, url, part_path, expected_size, chunk_size, timeout,
             delay = min(2 ** (attempt - 1), 30)
             have = os.path.getsize(part_path) if os.path.exists(part_path) else 0
             log(
-                f"  attempt {attempt}/{max_attempts} failed ({type(exc).__name__}: {exc}); "
+                f"  attempt {attempt}/{max_attempts} failed ({type(exc).__name__}: {redact(exc)}); "
                 f"{have} bytes on disk, resuming in {delay}s"
             )
             sleep(delay)
@@ -240,7 +258,7 @@ def download(
             session, url, part_path, expected_size, chunk_size, timeout, max_attempts, sleep
         )
     except Exception as exc:  # noqa: BLE001 -- surfaced as a recorded failure
-        return Result("failed", error=f"{type(exc).__name__}: {exc}")
+        return Result("failed", error=redact(f"{type(exc).__name__}: {exc}"))
 
     if expected_md5 and md5_observed != expected_md5:
         return Result(
