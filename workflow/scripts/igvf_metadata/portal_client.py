@@ -97,6 +97,24 @@ class PortalReader:
         database directly and avoid that false negative."""
         return self._connection().get(alias, ignore404=True, database=database) or None
 
+    @property
+    def base_url(self):
+        """The portal base this reader's metadata came from, e.g.
+        "https://api.data.igvf.org/". File `href` values are paths that must be
+        joined onto THIS base -- see downloader.resolve_url."""
+        return self._connection().igvf_mode.url
+
+    @property
+    def auth(self):
+        """The (api_key, secret_key) tuple igvf_utils built from the environment,
+        for reuse by the bulk downloader instead of it re-reading the env itself.
+
+        Returns None when the env vars are unset -- igvf_utils falls back to
+        anonymous rather than raising (connection.py:265-294), which then shows
+        up as a confusing 403 on every file. Callers doing real work should
+        treat None as a hard configuration error, not proceed."""
+        return self._connection().auth
+
     def get_multireport(self, query_string: str):
         """One raw GET against the /multireport/ endpoint -- e.g. cell_metadata.py's
         PseudobulkSet lookup. Not reusable via Connection.search(): that method

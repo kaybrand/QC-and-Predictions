@@ -270,21 +270,17 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
         seen_types = set()
         set_records = []
 
+        excluded_by_status = []
         for f in row.get("files") or []:
             ct = f.get("content_type")
             if ct not in wanted:
                 continue
             status = f.get("status")
             if status in EXCLUDED_FILE_STATUSES:
-                report["files_excluded_by_status"][f"{ct}:{status}"] += 1
+                excluded_by_status.append(f"{ct}:{status}")
                 continue
             seen_types.add(ct)
             scope, reasons = resolve_scope(row, f)
-            for r in reasons:
-                report["review_reasons"][r.split(":", 1)[0]] += 1
-            report["files_by_content_type"][ct] += 1
-            if scope["dataset"]:
-                report["datasets"][scope["dataset"]] += 1
             set_records.append(
                 {
                     "accession": f.get("accession"),
@@ -310,8 +306,10 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
                 }
             )
 
-        # A set restricted away by --datasets is not "missing" anything; only
-        # judge completeness for sets we actually kept.
+        # The `datasets` restriction is applied BEFORE any per-file accounting
+        # below, so every counter in `report` describes what this invocation
+        # actually selected. Counting first would make a --datasets igvf10 run
+        # report 13 sets alongside all 3087 files, which reads as a bug.
         if datasets is not None:
             set_records = [r for r in set_records if r["dataset"] in datasets]
             if not set_records:
@@ -335,6 +333,18 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
                 r["review_reasons"] = r["review_reasons"] + [
                     "set_missing:" + ",".join(sorted(missing))
                 ]
+
+        # Accounted for LAST, so every counter reflects exactly the records this
+        # invocation returns -- after the --datasets restriction, and after the
+        # set_missing tag above has been attached.
+        for rec in set_records:
+            report["files_by_content_type"][rec["content_type"]] += 1
+            if rec["dataset"]:
+                report["datasets"][rec["dataset"]] += 1
+            for reason in rec["review_reasons"]:
+                report["review_reasons"][reason.split(":", 1)[0]] += 1
+        for tag in excluded_by_status:
+            report["files_excluded_by_status"][tag] += 1
 
         report["sets_selected"] += 1
         records.extend(set_records)

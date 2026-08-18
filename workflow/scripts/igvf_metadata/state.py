@@ -157,6 +157,11 @@ CREATE TABLE IF NOT EXISTS portal_files (
     annotation TEXT,
     subsample TEXT,
     local_path TEXT,
+    -- Comma-joined tags from portal_files.resolve_scope: why a human should
+    -- look at this row (irregular path shape, unexpected filename, incomplete
+    -- parent set, ...). Non-empty does NOT mean unusable -- most such files
+    -- still download fine; it means "surfaced, not silently normalised".
+    review_reasons TEXT,
     -- pending | done | md5_mismatch | failed | needs_review | skipped
     download_state TEXT NOT NULL DEFAULT 'pending',
     bytes_written INTEGER,
@@ -392,6 +397,7 @@ _PORTAL_FILE_FIELDS = (
     "annotation",
     "subsample",
     "local_path",
+    "review_reasons",
 )
 
 
