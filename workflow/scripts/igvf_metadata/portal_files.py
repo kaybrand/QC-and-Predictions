@@ -61,13 +61,36 @@ IGVFDS1981DGID / IGVFDS3848ZSPZ / IGVFDS7151WSNC, aliased
 "anshul-kundaje:pseudobulk-IGVFDS8428QVAO-endothelial cell-IGVFSM...", are real
 primary pseudobulks in an in-progress state: each currently has ONLY a
 `cell by gene matrix` (plus gene quantifications) and is missing `fragments` and
-`per-cell quality report`, and its submitted_file_name is RELATIVE
-("pseudobulks/annotation_0-IGVFSM0220TLGT/rna_counts_mtx.h5ad") with no dataset
-component. They are expected to gain the missing files. So: download what exists,
-resolve the dataset from the set's principal analysis set accession, flag
-needs_review, and let a later run complete them automatically. Note their aliases
-also embed a SPACE and the accession-style dataset identity that `dataset` is
-slated to become -- another reason never to parse identity out of an alias here.
+`per-cell quality report`. They are expected to gain the missing files, so:
+download what exists, flag needs_review, and let a later run complete them.
+
+Three separate irregularities in those three sets, each handled explicitly:
+
+  - submitted_file_name is RELATIVE with no dataset component
+    ("pseudobulks/annotation_0-IGVFSM0220TLGT/rna_counts_mtx.h5ad"), so `dataset`
+    comes from the set's principal analysis set accession (IGVFDS8428QVAO).
+  - "annotation_0" IS NOT AN ANNOTATION. It is the submitter's positional
+    placeholder (annotation index 0) and appears verbatim in the portal's own
+    submitted_file_name. The real annotation is "endothelial cell", taken from
+    the SET ALIAS via annotation_from_alias() and independently corroborated by
+    cell_type.term_name (CL:0000115). An earlier version of this module recorded
+    "annotation_0-IGVFSM..." as the annotation, which was simply wrong.
+  - The alias uses the future "{accession}-{term name}-{subsample}" shape and the
+    annotation contains a SPACE. That is why annotation_from_alias peels from both
+    ends using the already-known dataset and subsample instead of splitting on
+    "-": a positional split cannot survive a value with spaces or hyphens.
+
+Note the on-disk path deliberately keeps the VERBATIM upstream directory name
+("annotation_0-IGVFSM0220TLGT"), not the recovered annotation. Two reasons: the
+mirror stays faithful to where upstream actually put the bytes, and it keeps a
+space out of a filesystem path. The recovered annotation is carried in the
+`annotation` field, which is what the comparison and manifest group on -- so
+"what this pseudobulk IS" and "where its bytes live" stay separate.
+
+Also worth knowing before comparing them to anything: these three are Mus
+musculus, Parse SPLiT-seq ("Parse SPLiT-seq pseudobulk of Mus musculus adrenal
+gland endothelial cell"), unlike every other set here, which is human 10x
+multiome.
 """
 
 import os
@@ -120,6 +143,11 @@ _REL_SFN = re.compile(r"^(?:.*/)?pseudobulks/(?P<dirname>[^/]+)/(?P<filename>[^/
 # at the end, so a hyphen inside the annotation name is harmless -- never a
 # blind split on "-".
 _DIRNAME = re.compile(r"^annotation-(?P<annotation>.+)-(?P<subsample>IGVFSM\w+)$")
+# Looser: ANY directory ending in a subsample accession. Recovers the subsample
+# from a directory whose annotation part is not a real annotation name -- e.g.
+# "annotation_0-IGVFSM0220TLGT", where "annotation_0" is the submitter's
+# positional placeholder (annotation index 0), not a cell type.
+_DIRNAME_SUBSAMPLE_ONLY = re.compile(r"^.*?-(?P<subsample>IGVFSM\w+)$")
 
 
 def log(msg):
@@ -140,6 +168,37 @@ def multireport_query():
 def _alias_of(row):
     aliases = row.get("aliases") or []
     return aliases[0] if aliases else None
+
+
+def annotation_from_alias(alias, dataset, subsample):
+    """Recover the annotation (cluster) from a SET alias when the directory name
+    doesn't carry a usable one.
+
+    The alias is "{lab}:[pseudobulk-]{dataset}-{annotation}-{subsample}", e.g.
+    "anshul-kundaje:pseudobulk-IGVFDS8428QVAO-endothelial cell-IGVFSM0220TLGT"
+    -> annotation "endothelial cell".
+
+    Peeled from BOTH ENDS using values already known independently (the dataset
+    and the subsample accession), never by splitting on "-" and taking a
+    position. That matters here: the annotation itself contains a space, and in
+    the general case may contain hyphens, so any positional split is wrong.
+
+    Returns None rather than a guess if the alias doesn't have the expected
+    shape. Cross-check only -- callers must not let this override an annotation
+    the directory name already gave them."""
+    if not alias or not subsample:
+        return None
+    suffix = alias.split(":", 1)[-1]
+    tail = f"-{subsample}"
+    if not suffix.endswith(tail):
+        return None
+    suffix = suffix[: -len(tail)]
+    # Optional literal segment seen on the accession-style aliases.
+    if suffix.startswith("pseudobulk-"):
+        suffix = suffix[len("pseudobulk-") :]
+    if dataset and suffix.startswith(f"{dataset}-"):
+        suffix = suffix[len(dataset) + 1 :]
+    return suffix or None
 
 
 def resolve_scope(row, file_obj):
@@ -188,14 +247,32 @@ def resolve_scope(row, file_obj):
     scope["dirname"] = m.group("dirname")
     scope["filename"] = m.group("filename")
 
+    alias = _alias_of(row)
     dm = _DIRNAME.match(scope["dirname"])
     if dm:
         scope["annotation"] = dm.group("annotation")
         scope["subsample"] = dm.group("subsample")
     else:
-        # e.g. "annotation_0-IGVFSM0220TLGT" -- keep the directory verbatim and
-        # say so, rather than inventing an annotation name.
+        # The directory's annotation segment is not an annotation. Real case:
+        # "annotation_0-IGVFSM0220TLGT", where "annotation_0" is the submitter's
+        # positional placeholder (annotation index 0). The subsample accession at
+        # the end is still trustworthy, and the ANNOTATION is recoverable from the
+        # set alias -- for these sets it is "endothelial cell", corroborated by
+        # cell_type.term_name (CL:0000115).
         reasons.append("nonstandard_directory_name")
+        sm = _DIRNAME_SUBSAMPLE_ONLY.match(scope["dirname"])
+        if sm:
+            scope["subsample"] = sm.group("subsample")
+        else:
+            samples = [x.get("accession") for x in (row.get("samples") or []) if isinstance(x, dict)]
+            if len(samples) == 1:
+                scope["subsample"] = samples[0]
+        annotation = annotation_from_alias(alias, scope["dataset"], scope["subsample"])
+        if annotation:
+            scope["annotation"] = annotation
+            reasons.append("annotation_from_alias")
+        else:
+            reasons.append("no_annotation")
 
     expected = TARGET_CONTENT_TYPES.get(file_obj.get("content_type"))
     if expected and scope["filename"] != expected:
@@ -203,7 +280,6 @@ def resolve_scope(row, file_obj):
         # drop. The real filename is still what gets written.
         reasons.append(f"unexpected_filename:{scope['filename']}")
 
-    alias = _alias_of(row)
     if alias and scope["subsample"] and scope["subsample"] not in alias:
         reasons.append("alias_subsample_mismatch")
 
