@@ -1,16 +1,18 @@
 """
 Reformat scE2G predictions/lists into the standard sharing format.
 
-Adapted from IGVF/workflow/rules/reformat.smk: the three target rules below
-(reformat_predictions, reformat_predictions_thresholded, reformat_lists) are
-unchanged in logic -- model is already a wildcard and
-update_scE2G_pred_formats.R already branches on `grepl("ATAC", opt$method)`,
-so no forking was needed here (unlike candidates_features.smk). The
-`update_*` Synapse-upload rules from the original file are intentionally not
-carried over -- Synapse upload for this pipeline is handled by
-synapse_manifest.smk instead. Thresholds come from get_model_threshold()
-(reads models/{model}/score_threshold_*) instead of a static config['models']
-dict.
+Adapted from IGVF/workflow/rules/reformat.smk: reformat_predictions,
+reformat_predictions_thresholded, and reformat_gene_list (originally one
+{meta}-wildcarded reformat_lists rule shared with elements, split 2026-08-19
+once elements stopped being an update_scE2G_pred_formats.R output -- see
+reformat_element_list below) are unchanged in logic -- model is already a
+wildcard and update_scE2G_pred_formats.R already branches on
+`grepl("ATAC", opt$method)`, so no forking was needed here (unlike
+candidates_features.smk). The `update_*` Synapse-upload rules from the
+original file are intentionally not carried over -- Synapse upload for this
+pipeline is handled by synapse_manifest.smk instead. Thresholds come from
+get_model_threshold() (reads models/{model}/score_threshold_*) instead of a
+static config['models'] dict.
 
 RESULTS_DIR_BASE here is the dataset-AGNOSTIC parent
 (scE2G_dir/results/uniformly_processed) -- {dataset} is a genuine,
@@ -108,9 +110,15 @@ def get_reformat_output_files():
             threshold = get_model_threshold(config["scE2G_dir"], model)
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}.e2g.tsv.gz"))
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.e2g.tsv.gz"))
+        # element_list sources from Neighborhoods/EnhancerList.bed (see
+        # reformat_element_list below), which every reformat-eligible cluster
+        # has regardless of model -- not gated on "multiome_powerlaw_v3 in
+        # models" like gene_list below, which needs Multiome's own RNA-derived
+        # scE2G_gene_list.tsv.gz.
+        files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz"))
+        files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz.tbi"))
         if "multiome_powerlaw_v3" in models:
-            for meta in ["element", "gene"]:
-                files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_multiome_v3_{meta}_list.tsv.gz"))
+            files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz"))
     return files
 
 
@@ -181,23 +189,20 @@ rule reformat_predictions_thresholded:
         """
 
 
-rule reformat_lists:
+rule reformat_gene_list:
     input:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "multiome_powerlaw_v3", "scE2G_{meta}_list.tsv.gz"),
+        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "multiome_powerlaw_v3", "scE2G_gene_list.tsv.gz"),
     output:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_multiome_v3_{meta}_list.tsv.gz"),
+        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz"),
     params:
         model="multiome_powerlaw_v3",
         version=config["scE2G_version"],
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
-        # reformat_lists only ever runs against multiome_powerlaw_v3 (see input: above) --
-        # "elements"/"genes" is Prediction Tabular Files' own variant naming (plural),
-        # not the {meta} wildcard's singular "element"/"gene".
+        # "genes" is Prediction Tabular Files' own variant naming (plural).
         portal_link=lambda wildcards: portal_link_alias(
-            wildcards.dataset, wildcards.cluster, "multiome_powerlaw_v3",
-            "elements" if wildcards.meta == "element" else "genes",
+            wildcards.dataset, wildcards.cluster, "multiome_powerlaw_v3", "genes",
         ),
     conda:
         "../envs/e2g_jamboree_env.yml"
@@ -214,4 +219,93 @@ rule reformat_lists:
         -m scE2G_{params.model} \
         -v {params.version} \
         -l "{params.portal_link}"
+        """
+
+
+rule reformat_element_list:
+    """Sources from Neighborhoods/EnhancerList.bed, NOT the multiome_powerlaw_v3
+    predictions tree -- confirmed 2026-08-19 on the IGVF Data Portal, elements
+    are represented as an INPUT to the prediction file (the candidate universe
+    considered before scoring), not something derived from it, and
+    EnhancerList.bed IS that pre-scoring candidate universe: cluster-level,
+    model-agnostic (Neighborhoods/ is shared across every model for a
+    cluster), already coordinate-sorted, and already in
+    "chr\\tstart\\tend\\t{class}|{chr}:{start}-{end}" form -- byte-for-byte the
+    same geometry as multiome_powerlaw_v3/scE2G_element_list.tsv.gz's own
+    chr/start/end/class/name columns (confirmed same row count, same order),
+    just without the model-specific quantitative annotation (RPM/RPKM/
+    activity_base/etc) that file also carries and that this output never
+    wanted anyway. Hence no data.table/dplyr transform is needed here (unlike
+    reformat_gene_list) -- just the same portal-metadata header block
+    update_scE2G_pred_formats.R assembles elsewhere, prepended directly, plus
+    the "#"-commented BED4 column-name line tabix/IGV/UCSC all skip. Depends
+    on the whole Neighborhoods directory rather than EnhancerList.bed
+    directly -- that file is an undeclared side-effect of scE2G's own
+    neighborhoods rule, so Snakemake can only resolve the dependency through
+    directory() (confirmed empirically: requesting the .bed path directly
+    raises MissingInputException).
+
+    Deliberately NOT named with a model or "multiome_v3" tag --
+    {dataset}_{cluster}_element_list, matching what it actually is.
+    enhancer_list_packaging.smk's own EnhancerList.bed.gz (unindexed,
+    header-less bgzip of the same file) was removed 2026-08-21 once this
+    rule made it fully redundant -- nothing outside that file's own rule
+    ever consumed it."""
+    input:
+        neighborhood_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "Neighborhoods"),
+    output:
+        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed"),
+    params:
+        version=config["scE2G_version"],
+        name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
+        term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
+        summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
+        # "elements_bed" is Prediction Tabular Files' own variant naming
+        # (renamed from "elements" 2026-08-21 once file_format became "bed").
+        # Hardcoded to the Multiome family alias regardless of which models
+        # this cluster actually ran, same as before this rule's source
+        # changed -- elements_bed's dual-family manifest row (see Prediction
+        # Tabular Files' module docstring) shares one physical file across
+        # two portal aliases, and enabled_families defaults to Multiome-only,
+        # so this hasn't yet had a scATAC-only cluster to get wrong.
+        portal_link=lambda wildcards: portal_link_alias(
+            wildcards.dataset, wildcards.cluster, "multiome_powerlaw_v3", "elements_bed",
+        ),
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        {{
+            echo "# Source: ABC_element_list"
+            echo "# Version: {params.version}"
+            echo "# GenomeReference: IGVFDS0280IQAI"
+            echo "# URL: https://github.com/EngreitzLab/scE2G/tree/main"
+            echo "# Assays: 10x Multiome"
+            echo "# SampleAgnostic: False"
+            echo "# SampleTermName: {params.name}"
+            echo "# SampleTermID: {params.term_id}"
+            echo "# CellAnnotation: {params.summary}"
+            echo "# Metadata: https://data.igvf.org/tabular-files/{params.portal_link}"
+            printf '#ElementChr\\tElementStart\\tElementEnd\\tElementName\\n'
+            cat {input.neighborhood_dir}/EnhancerList.bed
+        }} > {output}
+        """
+
+
+rule bgzip_index_element_list:
+    """EnhancerList.bed is already coordinate-sorted (see reformat_element_list
+    above), so no sort step is needed here."""
+    input:
+        bed=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed"),
+    output:
+        gz=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed.gz"),
+        tbi=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed.gz.tbi"),
+    conda:
+        "../envs/filter_multiome_env.yaml"  # has bioconda::htslib (bgzip, tabix)
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        bgzip -c {input.bed} > {output.gz}
+        tabix -p bed {output.gz}
         """

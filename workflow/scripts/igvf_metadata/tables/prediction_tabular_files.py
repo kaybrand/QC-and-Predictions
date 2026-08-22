@@ -1,14 +1,14 @@
 """Prediction Tabular Files -- object_type "tabular_file", scope
 cluster_model. Five content variants per (dataset, cluster, model): full,
-thresholded, bedpe, elements, genes -- 10 rows per cluster once both scE2G
-Multiome and scATAC are configured for it (bedpe/elements/genes are
+thresholded, bedpe, elements_bed, genes -- 10 rows per cluster once both scE2G
+Multiome and scATAC are configured for it (bedpe/elements_bed/genes are
 required for both models, per the 2026-07-10 design conversation).
 
 Upload order within this table, driven by depends_on:
-    elements, genes  (no dependency on sibling prediction rows)
+    elements_bed, genes  (no dependency on sibling prediction rows)
               |
               v
-             full  (derived_from unconditionally lists elements+genes'
+             full  (derived_from unconditionally lists elements_bed+genes'
                      aliases now that they're required content, not
                      optional -- confirmed 2026-07-16 -- so full's
                      depends_on must actually wait on them being uploaded
@@ -29,25 +29,48 @@ registered yet: depends_on still gates real uploads on it, so this only
 replaces an "invalid" validation failure with a correctly-labeled
 "deferred" outcome.
 
-full/elements/genes also need the ATAC fragment TabularFile / RNA count
+full/elements_bed/genes also need the ATAC fragment TabularFile / RNA count
 matrix MatrixFile tables (for derived_from) -- resolved, routed through
 igvf_metadata.refs (refs.atac_fragment_alias / refs.rna_matrix_alias),
 which delegate to the real filtered_atac_fragment_file / filtered_rna_count_matrix
 TableSpecs (see refs.py's own docstring).
 
-bedpe/elements/genes path builders (2026-07-21 update): all three now resolve
-to real, already-produced pipeline outputs, and pick up the same
+bedpe/elements_bed/genes path builders (2026-07-21 update): all three now
+resolve to real, already-produced pipeline outputs, and pick up the same
 file-existence-based enabled() that full/thresholded already use -- no other
 change needed.
-- elements/genes: reformat.smk's own reformat_lists rule (already in this
-  pipeline) reformats the raw {cluster_dir}/{model}/scE2G_{element,gene}_list.tsv.gz
-  scE2G output into the consortium-standard
-  {cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_{element,gene}_list.tsv.gz
-  -- there was no missing reformatting script after all, just a path builder
-  that hadn't been pointed at it yet. Same as scE2G's raw list output, this
-  is produced once per cluster regardless of which model triggered the row
-  (only ever from multiome_powerlaw_v3), matching this table's "elements
-  required for both families, genes Multiome-only" design.
+- genes: reformat.smk's own reformat_gene_list rule reformats the raw
+  {cluster_dir}/multiome_powerlaw_v3/scE2G_gene_list.tsv.gz scE2G output into
+  the consortium-standard
+  {cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz.
+  Multiome-only (RNA-derived), still gated on "multiome_powerlaw_v3 in
+  models" in get_reformat_output_files().
+- elements_bed (renamed from "elements" 2026-08-21, content itself reworked
+  2026-08-19): NOT derived from any prediction -- confirmed on the IGVF Data
+  Portal, elements are represented as an INPUT to the prediction file (the
+  pre-scoring candidate universe), not something derived from it.
+  reformat.smk's reformat_element_list + bgzip_index_element_list rules now
+  source {cluster_dir}/Neighborhoods/EnhancerList.bed (scE2G's own ABC
+  candidate-element output, cluster-level and model-agnostic -- confirmed
+  byte-for-byte the same coordinates/class, same order, as the
+  multiome_powerlaw_v3-scoped scE2G_element_list.tsv.gz this used to read
+  instead) into
+  {cluster_dir}/{dataset}_{cluster}_element_list.bed.gz(.tbi) -- a
+  bgzip+tabix-indexed, IGV/UCSC-loadable BED4 (ElementChr/Start/End/Name,
+  Name = "{class}|{chr}:{start}-{end}", column header row "#"-commented).
+  Deliberately NOT named with "multiome_v3" or any model tag, and NOT gated
+  on any model being present in get_reformat_output_files() (unlike genes
+  above) -- EnhancerList.bed exists for every reformat-eligible cluster
+  regardless of model, matching this table's "elements required for both
+  families" design (previously ungenerateable for scATAC-only clusters,
+  since scE2G never writes scE2G_element_list.tsv.gz outside
+  multiome_powerlaw_v3/). Variant renamed "elements" -> "elements_bed" (and
+  its alias's trailing "...predictions_elements" ->
+  "...predictions_elements_bed") once file_format became "bed" instead of
+  "tsv" -- file_format_specifications aliases renamed to
+  elements_reference_bed_file_format_specification_{pdf,md} to match, and
+  submitted_assembly (never actually set on this row, so nothing to remove
+  in code) is not a field of this row.
 - bedpe: scE2G's own write_sc_e2g_predictions_bedpe rule only emits a plain,
   uncompressed, unindexed .bedpe -- IGVF Portal submission requires
   .bedpe.gz + .bedpe.gz.tbi. workflow/rules/qc_stats.smk's new
@@ -66,7 +89,7 @@ reference_files (added 2026-08-06): confirmed via a live upload test against
 the real portal to resolve an upload error on this object type. Fixed,
 content_type-keyed accessions -- not derived per-row -- so every
 "element to gene interactions"/"elements reference" row (full, thresholded,
-bedpe, elements) gets the same 3, and every "gene quantifications" row
+bedpe, elements_bed) gets the same 3, and every "gene quantifications" row
 (genes) gets the 1 that applies to it.
 """
 
@@ -143,8 +166,8 @@ def _bedpe_path(ctx):
     )
 
 
-def _elements_path(ctx):
-    return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_multiome_v3_element_list.tsv.gz")
+def _elements_bed_path(ctx):
+    return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_element_list.bed.gz")
 
 
 def _genes_path(ctx):
@@ -169,7 +192,7 @@ def _full_row(ctx):
     parts = [
         refs.trained_model_file_alias(ctx),  # derived_from wants the FILE, not the Set
         refs.atac_fragment_alias(ctx),
-        build_alias(ctx, "elements"),
+        build_alias(ctx, "elements_bed"),
     ]
     if family(ctx.model) == "Multiome":
         parts.append(refs.rna_matrix_alias(ctx))
@@ -218,18 +241,21 @@ def _bedpe_row(ctx):
     }
 
 
-def _elements_row(ctx):
+def _elements_bed_row(ctx):
     return {
         "content_type": "elements reference",
-        "file_format": "tsv",
-        "description": f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
+        "file_format": "bed",
+        "description": (
+            f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} "
+            "cells for IGV visualization"
+        ),
         "derived_from": refs.atac_fragment_alias(ctx),
         "file_format_specifications": [
-            make_alias(ctx.igvf, "elements_reference_file_format_specification_pdf"),
-            make_alias(ctx.igvf, "elements_reference_file_format_specification_md"),
+            make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_pdf"),
+            make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_md"),
         ],
         "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
-        "submitted_file_name": _elements_path(ctx),
+        "submitted_file_name": _elements_bed_path(ctx),
     }
 
 
@@ -269,7 +295,7 @@ def _genes_enabled(ctx):
 
 
 def _full_depends_on(ctx):
-    deps = [("prediction_set", ""), ("filtered_atac_fragment_file", ""), (TABLE_NAME, "elements")]
+    deps = [("prediction_set", ""), ("filtered_atac_fragment_file", ""), (TABLE_NAME, "elements_bed")]
     if family(ctx.model) == "Multiome":
         deps.append((TABLE_NAME, "genes"))
         deps.append(("filtered_rna_count_matrix", ""))
@@ -310,9 +336,9 @@ TABLE = registry.register(
                 depends_on=_dep((TABLE_NAME, "thresholded")),
             ),
             registry.VariantSpec(
-                name="elements",
-                build_row=_elements_row,
-                enabled=_existing_file_enabled(_elements_path),
+                name="elements_bed",
+                build_row=_elements_bed_row,
+                enabled=_existing_file_enabled(_elements_bed_path),
                 depends_on=_dep(("filtered_atac_fragment_file", "")),
             ),
             registry.VariantSpec(
