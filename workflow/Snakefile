@@ -97,7 +97,6 @@ include: "rules/reformat.smk"
 include: "rules/candidates_features.smk"
 include: "rules/synapse_manifest.smk"
 include: "rules/qc_stats.smk"
-include: "rules/enhancer_list_packaging.smk"
 
 
 rule all:
@@ -108,5 +107,4 @@ rule all:
         get_qc_stats_targets(),
         get_igv_track_files(),
         get_rna_matrix_packages(),
-        get_enhancer_list_targets(),
     default_target: True
