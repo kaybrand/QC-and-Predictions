@@ -32,12 +32,24 @@ data_dir: /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudo
 # this repo's own workflow/), not against data_dir and not against the current
 # working directory -- see workflow/scripts/pipeline_paths.py.
 output_dir: ./results
-# pseudobulks_dir for a given dataset = {pseudobulks_root}/{dataset}/pseudobulks -- always
-# the archive-extracted root (one-time-per-dataset sbatch job, per the
-# qc-filter-pseudobulks skill), even for igvf0/igvf1: the sbaek1 pseudobulk directory
-# only has real data for those two datasets and 0-byte placeholders for everything
-# else, so standardizing avoids a dataset-dependent branch.
-pseudobulks_root: /scratch/users/kaybrand/pseudobulk/igvf
+# pseudobulks_dir for a given dataset = {pseudobulks_root}/{dataset}/pseudobulks.
+#
+# Now the IGVF Data Portal download (workflow/scripts/download_portal_pseudobulks.py,
+# 2026-08-17/18: 3086 primary-pseudobulk files, 151.6 GB, every one md5-verified
+# against the portal's own checksum) rather than the 2026-02-11/14 Kundaje-lab
+# archive extraction, which had no provenance record and is ~6 months stale. The two
+# trees use the identical annotation-{annotation}-{IGVFSM...}/ layout with the same
+# fragments.tsv.gz / rna_counts_mtx.h5ad filenames, so this is a change of root only
+# -- filter_atac_fragments.py and filter_rna_counts.py are unaffected. (The one layout
+# difference: the portal ships per_cell_qc.tsv.gz where the archive had plain
+# per_cell_qc.tsv, which only build_qc_datatables.py reads, and it handles gzip.)
+#
+# CAVEAT: kasowski has NO portal presence at all -- none of its 143 pseudobulk
+# directories exist upstream -- so it is the one dataset that must stay on the
+# archive root (/scratch/users/kaybrand/pseudobulk/igvf). See
+# PSEUDOBULK_ROOT_OVERRIDES in local_scripts/generate_pipeline_configs.py, which
+# writes that root into kasowski's config specifically.
+pseudobulks_root: /scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026
 scE2G_version: "1.2"
 
 # Shared with manage_igvf_metadata.py (the IGVF metadata uploader) -- see
@@ -65,7 +77,21 @@ exclusion:
   # "{dataset}/{cluster}" strings, not bare cluster names -- cluster names aren't
   # guaranteed unique across datasets, so exclusion entries must be dataset-qualified.
   user_specified: []
-  process_excluded_no_upload: false # true => run the pipeline for excluded clusters, skip all Synapse steps for them
+  # "Predictions for everything I can get, but DON'T SHARE them." true => also run
+  # the pipeline for clusters that FAILED the quality gate below, while still gating
+  # upload/manifest/Synapse steps on actually passing it. Renamed 2026-08-24 from
+  # `process_excluded_no_upload`, which is still accepted with a deprecation notice.
+  #
+  # Two subtleties the name can't carry:
+  #  - It also un-excludes `user_specified` clusters. That's intended: hand-excluding
+  #    a cluster and then setting this flag means "run it anyway, never share it."
+  #  - It expands the processed set ONLY with clusters excluded for quality reasons
+  #    (below_min_cell_count/fragments_total/umi_count). Clusters excluded for
+  #    missing INPUTS (missing_qc_guide/missing_metrics/missing_per_cell_qc_table)
+  #    stay excluded no matter what -- atac_fragment_file and rna_count_matrix both
+  #    need inputs Snakemake cannot produce, so including them would not yield
+  #    predictions, it would just fail the DAG with a MissingInputException.
+  predictions_on_everything_but_do_not_upload: false
   auto_thresholds:
     min_cell_count: 100
     min_fragments_total: 2000000
@@ -78,7 +104,7 @@ exclusion:
     # computed stats fall below these thresholds is excluded for this run, in
     # addition to `user_specified`. umi_count is skipped for ATAC-only clusters.
     # Because this happens at parse time, excluded clusters never get a single
-    # rule instantiated for them, unless `process_excluded_no_upload` is set.
+    # rule instantiated for them, unless `predictions_on_everything_but_do_not_upload` is set.
 
 synapse:
   dry_run: true             # default; upload steps never push for real until explicitly disabled

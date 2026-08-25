@@ -22,8 +22,44 @@ approach was checked against.
 import csv
 import gzip
 import os
+import sys
 
 DEFAULT_QC_GUIDE_NAME = "filtered_barcodes_with_subsamples.tsv.gz"
+
+# Exclusion reasons that mean "this cluster's INPUTS don't exist," as opposed to
+# "this cluster's data is too shallow." Only the latter can be un-excluded by
+# predictions_on_everything_but_do_not_upload -- see resolve_exclusions().
+UNPROCESSABLE_REASONS = frozenset({"missing_qc_guide", "missing_metrics", "missing_per_cell_qc_table"})
+
+# Renamed 2026-08-24. The old name described the mechanism ("process the excluded
+# ones, don't upload"); the new one states the intent. Old key still accepted so
+# hand-curated configs (igvf1/igvf4/igvf10, never auto-regenerated) keep working.
+PREDICT_EVERYTHING_KEY = "predictions_on_everything_but_do_not_upload"
+PREDICT_EVERYTHING_LEGACY_KEY = "process_excluded_no_upload"
+
+
+def predictions_on_everything(exclusion_cfg):
+    """Reads PREDICT_EVERYTHING_KEY, falling back to the deprecated name with a
+    warning. If both are set the new one wins, loudly -- silently preferring
+    either one would be worse than saying which was used."""
+    new = exclusion_cfg.get(PREDICT_EVERYTHING_KEY)
+    legacy = exclusion_cfg.get(PREDICT_EVERYTHING_LEGACY_KEY)
+    if new is not None and legacy is not None:
+        print(
+            f"[resolve_exclusions] WARNING: both exclusion.{PREDICT_EVERYTHING_KEY} ({new}) and the "
+            f"deprecated exclusion.{PREDICT_EVERYTHING_LEGACY_KEY} ({legacy}) are set -- using {new}. "
+            f"Remove the deprecated key.",
+            file=sys.stderr,
+        )
+        return bool(new)
+    if legacy is not None:
+        print(
+            f"[resolve_exclusions] NOTE: exclusion.{PREDICT_EVERYTHING_LEGACY_KEY} is deprecated -- "
+            f"rename it to exclusion.{PREDICT_EVERYTHING_KEY}",
+            file=sys.stderr,
+        )
+        return bool(legacy)
+    return bool(new)
 
 
 def _read_qc_guide_barcodes(qc_guide_path):
@@ -155,7 +191,11 @@ def resolve_exclusions(config, data_dir):
 
     included_clusters:        (dataset, cluster) pairs this run will actually process (filter/scE2G/etc)
     upload_eligible_clusters: subset of included_clusters whose products may be uploaded
-    excluded_clusters:        (dataset, cluster) pairs this run will skip entirely (unless process_excluded_no_upload)
+    excluded_clusters:        (dataset, cluster) pairs this run will skip entirely (unless
+                              exclusion.predictions_on_everything_but_do_not_upload)
+
+    See manifest_eligible_clusters() below for the further, IGVF-manifest-specific
+    narrowing of upload_eligible_clusters.
 
     data_dir: config["data_dir"] -- corrected 2026-08-03, this used to be the
     pipeline's own code-checkout root (WDIR), which only found real
@@ -171,7 +211,7 @@ def resolve_exclusions(config, data_dir):
 
     exclusion_cfg = config.get("exclusion", {})
     user_specified = _parse_qualified_names(exclusion_cfg.get("user_specified", []))
-    process_excluded_no_upload = exclusion_cfg.get("process_excluded_no_upload", False)
+    predict_everything = predictions_on_everything(exclusion_cfg)
     thresholds = exclusion_cfg.get("auto_thresholds", {})
     min_cell_count = thresholds.get("min_cell_count", 0)
     min_fragments_total = thresholds.get("min_fragments_total", 0)
@@ -225,13 +265,51 @@ def resolve_exclusions(config, data_dir):
             "reason": reason,
         }
 
-    if process_excluded_no_upload:
-        included_clusters = all_clusters
+    if predict_everything:
+        # "Predictions for everything I can get, but DON'T SHARE them."
+        #
+        # Expands INCLUDED only with clusters excluded for QUALITY reasons
+        # (below_min_*) and user_specified -- deliberately NOT with the
+        # missing-input reasons. A cluster with no QC guide / no metrics table
+        # cannot mechanically be processed at all (atac_fragment_file and
+        # rna_count_matrix both require inputs Snakemake can't produce), so
+        # including it wouldn't produce predictions, it would just break the DAG
+        # with a MissingInputException. user_specified IS un-excluded, on
+        # purpose: this flag means "run it anyway, just never share it," which is
+        # exactly what a hand-excluded cluster wants under this flag.
+        processable = {
+            key for key in excluded_clusters if stats_by_cluster[key]["reason"] not in UNPROCESSABLE_REASONS
+        }
+        included_clusters = (all_clusters - excluded_clusters) | processable
     else:
         included_clusters = all_clusters - excluded_clusters
+    # Always gated on actually passing the quality bar, flag or no flag.
     upload_eligible_clusters = included_clusters - excluded_clusters
 
     return included_clusters, upload_eligible_clusters, excluded_clusters, stats_by_cluster
+
+
+def manifest_eligible_clusters(config, upload_eligible_clusters):
+    """The subset of upload-eligible clusters whose products should appear in an
+    IGVF Portal manifest: upload-eligible MINUS any cluster carrying
+    `igvf_manifest_excluded: true`.
+
+    Single source of truth for that flag, shared by common.smk (which exposes it
+    to the rest of the pipeline) and by whatever builds manage_igvf_metadata.py's
+    --cluster-keys list. Before this existed the flag was documented in
+    example_pipeline_config.yaml and written by generate_pipeline_configs.py's
+    ATAC_ONLY_OVERRIDES, and read by generate_report.py for REPORTING -- but
+    never actually enforced anywhere, so those 4 ATAC-only clusters still got
+    manifest rows built for them.
+
+    Deliberately NOT intersected into reformat eligibility: an ATAC-only variant
+    cluster is still reformatted (its real CellAnnotation resolves under the base
+    name via cell_annotation_key), it just isn't submitted."""
+    return {
+        (dataset, cluster)
+        for dataset, cluster in upload_eligible_clusters
+        if not config["clusters"][dataset][cluster].get("igvf_manifest_excluded", False)
+    }
 
 
 CLUSTER_STATS_HEADER = ["dataset", "cluster", "cell_count", "fragments_total", "umi_count", "reason"]

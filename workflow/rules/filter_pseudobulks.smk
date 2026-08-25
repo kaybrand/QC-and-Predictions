@@ -143,7 +143,7 @@ rule package_rna_count_matrix:
 
 def get_rna_matrix_packages():
     """Tarball targets for every upload-eligible cluster with RNA data --
-    excluded clusters (unless process_excluded_no_upload) never get
+    excluded clusters (unless predictions_on_everything_but_do_not_upload) never get
     distribution-format outputs, same reasoning as
     reformat.smk's get_reformat_output_files()."""
     return [
