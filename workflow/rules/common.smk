@@ -363,6 +363,27 @@ if DATASETS:
 # dataset gets a small generated file with the dataset name baked in as a
 # literal identifier, and the main Snakefile includes one per dataset.
 # ---------------------------------------------------------------------------
+# sce2g_modules: false skips importing scE2G entirely -- for a PORTAL-ONLY pass
+# (`--config sce2g_modules=false` with the `portal_reformat` target), where the
+# only rules that run are the 3 reformat rules, whose inputs are scE2G outputs
+# that already exist on disk as files. Snakemake matches those by path, so it
+# needs no rule capable of producing them.
+#
+# Worth being precise about what this does and doesn't buy, because it is easy to
+# mistake for a fix it isn't. It is a PARSE-COST optimisation: importing scE2G
+# once per dataset is slow, and it drags in the ABC_BIOSAMPLES mtime-preservation
+# dance in the top-level Snakefile (scE2G rewrites tmp/config_abc_biosamples.tsv
+# at parse time on every run, which fools an mtime DAG into rerunning ~140 jobs).
+# Skipping the import removes that hazard by construction rather than working
+# around it. It is NOT the fix for spurious rebuilds in a full run -- that is
+# --rerun-triggers mtime, which run_pipeline.py always passes.
+#
+# Safe only AFTER Phase 2 is complete for these clusters: with no scE2G rules
+# loaded, a genuinely missing prediction file has no producing rule and Snakemake
+# fails with MissingInputException. That is the desired behaviour -- loud, not a
+# silent skip -- but it does mean this is strictly a post-Phase-2 operation.
+SCE2G_MODULES_ENABLED = config.get("sce2g_modules", True)
+
 GENERATED_RULES_DIR = os.path.join(workflow.basedir, "rules", "generated")
 os.makedirs(GENERATED_RULES_DIR, exist_ok=True)
 SCE2G_MODULE_FILES = []
@@ -371,7 +392,7 @@ SCE2G_MODULE_FILES = []
 # ABC_BIOSAMPLES path without assuming these two lists stay in lockstep --
 # see that loop's own comment for why it needs this at all.
 SCE2G_MODULE_FILE_DATASETS = {}
-for _dataset in DATASETS:
+for _dataset in DATASETS if SCE2G_MODULES_ENABLED else []:
     _module_name = f"scE2G_{_dataset}"
     _rule_prefix = f"sce2g_{_dataset}"
     _generated_path = os.path.join(GENERATED_RULES_DIR, f"{_module_name}.smk")

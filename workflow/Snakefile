@@ -110,3 +110,16 @@ rule all:
         get_rna_matrix_packages(),
         get_enhancer_list_targets(),
     default_target: True
+
+
+# Portal-format reformatting only, for an already-complete results tree. Pair with
+# `--config sce2g_modules=false` (see common.smk) to skip importing scE2G
+# per-dataset, which is what makes this pass parse in seconds instead of minutes
+# and keeps the ABC_BIOSAMPLES parse-time rewrite -- and the ~140 spurious ABC/
+# ENCODE-rE2G reruns it can trigger -- out of the picture entirely.
+#
+# Empty in pipeline_mode=local_only, so this target is a clean no-op there rather
+# than an error.
+rule portal_reformat:
+    input:
+        get_reformat_output_files(),
