@@ -91,7 +91,7 @@ TABLE = registry.register(
             "merged": True,
             "submitter_comment": (
                 "This principal pseudobulk set is based on status: 'in progress' data and will be "
-                "superseded when those data are updated"
+                "superseded if those data are updated"
             ),
         },
         variants=[
