@@ -464,7 +464,13 @@ def main():
         # `snakemake` in default mode aborts pointing at this driver rather than
         # silently dropping the reformat targets, and no stale values can ever
         # carry into a future run.
-        if mode == "default" and not args.skip_snakemake:
+        #
+        # Removed whenever the warm stage wrote one -- NOT conditioned on snakemake
+        # having run. --skip-snakemake used to leave it behind, which is precisely
+        # the state this deletion exists to prevent: a snapshot on disk that a later
+        # bare `snakemake` would happily consume while still inside its freshness
+        # window, with nobody having warmed the cache for that invocation.
+        if mode == "default":
             for path in snapshot_paths:
                 if cas.remove_snapshot(path):
                     log(f"removed temp snapshot {path}")
