@@ -267,7 +267,19 @@ rule reformat_element_list:
     input:
         neighborhood_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "Neighborhoods"),
     output:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed"),
+        # temp(): bgzip_index_element_list below is the only consumer, and only its
+        # .bed.gz/.bed.gz.tbi are ever requested as targets -- nothing asks for this
+        # plain .bed, so Snakemake deletes it as soon as the bgzip job succeeds.
+        # Worth it: ~8.5 MB per cluster uncompressed vs ~2 MB gzipped (51 MB vs 12 MB
+        # measured across igvf0's 6 clusters), i.e. ~1.3 GB of redundant copy across a
+        # full ~150-cluster round.
+        #
+        # Safe because a missing temp input does NOT re-trigger its consumer while the
+        # consumer's own outputs are up to date -- otherwise this would rebuild every
+        # run. If .bed.gz ever does need regenerating, this rule simply re-runs first;
+        # it's a header echo plus a cat, not real compute. Pass --notemp to keep the
+        # intermediate around for inspection.
+        temp(os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed")),
     params:
         version=config["scE2G_version"],
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
