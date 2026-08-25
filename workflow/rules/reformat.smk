@@ -34,52 +34,60 @@ carries the file's own IGVF alias (computed via igvf_metadata's own
 build_alias, the single source of truth for that formula -- not reimplemented
 here), which the R script spells out into a full https://data.igvf.org/... URL.
 
-STUB, flagged for whoever wires up the "pipeline-integrated Snakemake rule"
-manage_igvf_metadata.py's own docstring already anticipates: portal_cell_metadata()
-below only READS an already-populated state.db (plain read-only sqlite3, no
-network/igvf_utils needed at Snakemake parse time) -- it does not trigger a
-live portal refresh itself. Assumes some other invocation (manage_igvf_metadata.py,
-run standalone, or that future pipeline-integrated rule) has already refreshed
-the cache -- via cell_metadata.refresh_if_stale, gated on cache age > 24h AND
-(reformatting requested OR Principal Pseudobulk Set construction) -- for
-these clusters. Raises clearly, per cluster, if it hasn't.
+2026-08-24: portal_cell_metadata() now reads common.smk's CELL_ANNOTATIONS -- the
+driver-written, timestamp- and digest-checked projection of state.db's
+cell_annotations (workflow/scripts/cell_annotation_projection.py) -- rather than
+opening state.db itself. Nothing under workflow/rules/ connects to that database
+any more: every Slurm worker re-parses this file, state.db lives on Lustre in WAL
+mode, and WAL's shared-memory index is not supported across hosts.
+
+This file still never contacts the network, at parse time or at execution time.
+The cache is warmed once, before Snakemake starts, by
+workflow/scripts/run_pipeline.py's warm stage (cell_metadata.fetch_if_stale +
+derive_scopes). In pipeline_mode=local_only none of this is touched at all and
+get_reformat_output_files() returns nothing.
 """
 
 import sys
 
 sys.path.insert(0, os.path.join(workflow.basedir, "scripts"))
 from cell_annotations import annotation_lookup_key
-from igvf_metadata import state as igvf_state
 from igvf_metadata.context import Context, IgvfConfig
 from igvf_metadata.tables.prediction_tabular_files import build_alias as _ptf_build_alias
 
 IGVF_CFG = IgvfConfig.from_dict(config.get("igvf", {}))
-_STATE_DB_PATH = config.get("igvf", {}).get("state_db_path")
-_STATE_CONN = igvf_state.connect(_STATE_DB_PATH) if _STATE_DB_PATH else None
 
 
 def portal_cell_metadata(dataset, cluster):
     """{"cell_annotation":..., "cl_id":..., "term_id":..., "term_name":...,
-    "cell_qualifier":..., ...} for (dataset, cluster) from the IGVF Portal
-    cell-metadata cache -- see this module's docstring for what this does
-    (and doesn't) do, and for which of these fields feeds which header
-    field. Resolves via the cluster's cell_annotation_key override when set
-    (ATAC-only variant clusters -- the real CellAnnotation is cached under
-    the base name, not the suffixed cluster key), same as common.smk's
-    REFORMAT_ELIGIBLE_CLUSTERS gate, so a cluster that passed that gate can
+    "cell_qualifier":..., ...} for (dataset, cluster) -- see this module's
+    docstring for which of these fields feeds which header field.
+
+    Reads common.smk's CELL_ANNOTATIONS, the driver-written projection of
+    state.db's cell_annotations (see scripts/cell_annotation_projection.py). No
+    SQLite connection here any more: this function is called from `params`
+    lambdas, which every Slurm worker evaluates after re-parsing the workflow,
+    and multi-host WAL access to a Lustre-hosted DB is unsupported.
+
+    Resolves via the cluster's cell_annotation_key override when set (ATAC-only
+    variant clusters -- the real CellAnnotation lives under the base name, not
+    the suffixed cluster key), the same lookup common.smk's
+    REFORMAT_ELIGIBLE_CLUSTERS gate uses, so a cluster that passed that gate can
     never fail this lookup."""
-    if _STATE_CONN is None:
+    if PIPELINE_MODE == "local_only":
+        # Unreachable via rule all (get_reformat_output_files returns [] in this
+        # mode), so only an explicitly-named reformat target gets here. Say why
+        # rather than looking like a cold cache.
         raise ValueError(
-            "igvf.state_db_path not set in the pipeline config -- required for "
-            "SampleTermID/SampleSummaryShort, sourced from the IGVF Portal "
-            "cell-metadata cache (see workflow/scripts/igvf_metadata/cell_metadata.py)"
+            f"{dataset}/{cluster}: reformatting requested while pipeline_mode=local_only, which "
+            "deliberately makes no CellAnnotation available. Re-run in default mode via "
+            "workflow/scripts/run_pipeline.py."
         )
-    lookup_dataset, lookup_cluster = annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster])
-    row = igvf_state.get_cell_annotation(_STATE_CONN, lookup_dataset, lookup_cluster)
+    row = CELL_ANNOTATIONS.get(annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster]))
     if row is None:
         raise ValueError(
-            f"{dataset}/{cluster}: no cached Cell Annotation metadata in state.db -- "
-            "refresh the cache for this cluster first (e.g. via manage_igvf_metadata.py)"
+            f"{dataset}/{cluster}: no Cell Annotation in the projection -- this cluster's portal "
+            "primaries didn't resolve. See the driver's warm-stage status report for the reason."
         )
     return row
 
@@ -96,11 +104,16 @@ def portal_link_alias(dataset, cluster, model, variant):
 
 def get_reformat_output_files():
     # REFORMAT_ELIGIBLE_CLUSTERS (common.smk), not UPLOAD_ELIGIBLE_CLUSTERS --
-    # portal_cell_metadata() below raises if a (dataset, cluster) has no
-    # cached Cell Annotation. Requesting reformat output for a
-    # quality-passing cluster that simply hasn't been portal-annotated yet
-    # would crash `rule all` outright; core generation (fragments, RNA
-    # matrices, predictions, candidates, features) is never gated this way.
+    # portal_cell_metadata() above raises if a (dataset, cluster) has no
+    # Cell Annotation. Requesting reformat output for a quality-passing cluster
+    # that simply hasn't been portal-annotated yet would crash `rule all`
+    # outright; core generation (fragments, RNA matrices, predictions,
+    # candidates, features) is never gated this way.
+    #
+    # Empty in local_only mode, by construction: REFORMAT_ELIGIBLE_CLUSTERS is
+    # empty there. That is what makes `--omit-from reformat_predictions
+    # reformat_predictions_thresholded reformat_lists` unnecessary -- and the
+    # nargs='+' target-swallowing footgun that flag carries avoidable entirely.
     files = []
     for dataset, cluster in REFORMAT_ELIGIBLE_CLUSTERS:
         models = config["clusters"][dataset][cluster]["models"]

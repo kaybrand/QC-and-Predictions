@@ -42,7 +42,13 @@ from write_scE2G_config import (  # noqa: E402
 )
 from pipeline_paths import resolve_repo_relative  # noqa: E402
 from cell_annotations import annotation_lookup_key  # noqa: E402
-from igvf_metadata import state as igvf_state  # noqa: E402
+
+# Read-only projection of state.db's cell_annotations, written by the driver
+# before Snakemake starts. Replaces the former `from igvf_metadata import state`
+# parse-time SQLite connection -- every Slurm worker re-parses this file, and
+# multi-host WAL access to a Lustre-hosted SQLite DB is not supported. Nothing
+# under workflow/rules/ opens state.db any more.
+import cell_annotation_projection as cap  # noqa: E402
 
 # Consolidated OUTPUT root for everything this pipeline WRITES (filtered
 # ATAC/RNA outputs, scE2G's own results tree, Synapse manifests, cluster-stats
@@ -171,36 +177,79 @@ CLUSTER_STATS_DIR = os.path.join(OUTPUT_DIR, "cluster_stats")
 for _stats_dataset in config["clusters"]:
     write_cluster_stats_table(_stats_dataset, CLUSTER_STATS, CLUSTER_STATS_DIR)
 
-# CellAnnotation-based reformat eligibility: a quality-passing cluster
-# missing CellAnnotation still gets full predictions/candidates/features --
-# it's just not reformatted into portal format. Gated on the SAME live cache
-# reformat.smk's portal_cell_metadata() reads (igvf_metadata.state's
-# cell_annotations table, populated by cell_metadata.refresh_if_stale's real
-# IGVF Portal GET -- see manage_igvf_metadata.py) -- NOT
-# cell_annotations_by_dataset_cluster.tsv, which is a manually-pulled preview
-# snapshot for human/report reading, not an authoritative gate: it can say
-# "has annotation" for a cluster whose dataset has never actually been run
-# through manage_igvf_metadata.py, which would otherwise let this pipeline
-# request a reformat rule that immediately crashes on a cold cache (confirmed
-# empirically 2026-08-15). Read-only local SQLite query -- no network contact
-# at parse time; the cache itself is warmed by a separate, explicit
-# `manage_igvf_metadata.py --mode preview` invocation (see the plan's
-# execution order). ATAC-only variant clusters resolve via their
-# cell_annotation_key override (base name), not their suffixed key.
+# ---------------------------------------------------------------------------
+# Pipeline mode. Top-level (not nested under a section) specifically so it can be
+# overridden per-invocation with `--config pipeline_mode=local_only`.
+#
+#   local_only -- everything Phase 1 + Phase 2 produce: filtered fragments/RNA
+#                 matrices, scE2G predictions/candidates/features, QC report, IGV
+#                 tracks, EnhancerList + RNA matrix packaging. NEVER opens
+#                 state.db, never reads the CellAnnotation projection, never
+#                 requests a reformat target. Not "reads the cache and finds
+#                 nothing" -- genuinely no contact, so a cold/absent/locked cache
+#                 cannot affect it at all. Formalises what used to be an
+#                 `--omit-from reformat_predictions ...` CLI convention, which
+#                 was fragile: --omit-from takes nargs='+' and silently swallowed
+#                 a following target path (a real 5.5-hour incident).
+#   default    -- the above PLUS portal-format reformatting, for clusters the
+#                 driver's warm stage resolved a CellAnnotation for.
+# ---------------------------------------------------------------------------
+PIPELINE_MODE = config.get("pipeline_mode", "default")
+if PIPELINE_MODE not in ("default", "local_only"):
+    raise ValueError(f"pipeline_mode must be 'default' or 'local_only', got {PIPELINE_MODE!r}")
+
+# CellAnnotation-based reformat eligibility: a quality-passing cluster missing
+# CellAnnotation still gets full predictions/candidates/features -- it's just not
+# reformatted into portal format.
+#
+# Read from the per-dataset projection the driver writes (see
+# scripts/cell_annotation_projection.py for why this is a file and not the
+# state.db query it replaced: every Slurm worker re-parses this file, and
+# multi-host WAL access to a Lustre-hosted SQLite DB is unsupported). The
+# projection is timestamp- and digest-checked on read, so unlike the
+# manually-refreshed preview TSV this pipeline used to gate on -- which once
+# claimed a cluster was annotated while state.db was cold, crashing a reformat
+# rule for real (commit b6e62e0) -- a stale or foreign one raises instead of
+# quietly answering the wrong question.
+#
+# ATAC-only variant clusters resolve via their cell_annotation_key override
+# (base name), not their suffixed key.
 REFORMAT_ELIGIBLE_CLUSTERS = set()
-_state_db_path = config.get("igvf", {}).get("state_db_path")
-if _state_db_path:
-    _state_conn = igvf_state.connect(_state_db_path)
-    for dataset, cluster in UPLOAD_ELIGIBLE_CLUSTERS:
-        _lookup_key = annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster])
-        if igvf_state.get_cell_annotation(_state_conn, *_lookup_key):
-            REFORMAT_ELIGIBLE_CLUSTERS.add((dataset, cluster))
-    _state_conn.close()
-_missing_annotation = UPLOAD_ELIGIBLE_CLUSTERS - REFORMAT_ELIGIBLE_CLUSTERS
-if _missing_annotation:
+CELL_ANNOTATIONS = {}
+if PIPELINE_MODE == "local_only":
     print(
-        "[QC-and-Predictions] Quality-passing but no cached CellAnnotation yet "
-        f"(predictions only, no reformat until manage_igvf_metadata.py warms the cache): {sorted(_missing_annotation)}"
+        "[QC-and-Predictions] local_only mode: portal reformatting and IGVF manifest generation are "
+        f"DISABLED by config. {len(UPLOAD_ELIGIBLE_CLUSTERS)} quality-passing cluster(s) still get full "
+        "scE2G output. No state.db or CellAnnotation-cache access at all."
+    )
+else:
+    _max_age = config.get("igvf", {}).get("cache_max_age_hours", cap.DEFAULT_MAX_AGE_HOURS)
+    _digest = cap.cluster_set_digest(
+        {(d, c) for d, clusters in config["clusters"].items() for c in clusters}
+    )
+    for _dataset in config["clusters"]:
+        CELL_ANNOTATIONS.update(
+            cap.read_projection(
+                cap.projection_path(OUTPUT_DIR, _dataset),
+                expected_digest=_digest,
+                max_age_hours=_max_age,
+                fix_hint=(
+                    "run the pipeline through workflow/scripts/run_pipeline.py (it warms the cache and "
+                    "writes this projection before invoking Snakemake), or pass "
+                    "--config pipeline_mode=local_only to skip everything that needs the portal."
+                ),
+            )
+        )
+    for dataset, cluster in UPLOAD_ELIGIBLE_CLUSTERS:
+        if annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster]) in CELL_ANNOTATIONS:
+            REFORMAT_ELIGIBLE_CLUSTERS.add((dataset, cluster))
+
+_missing_annotation = UPLOAD_ELIGIBLE_CLUSTERS - REFORMAT_ELIGIBLE_CLUSTERS
+if _missing_annotation and PIPELINE_MODE != "local_only":
+    print(
+        "[QC-and-Predictions] Quality-passing but no resolvable CellAnnotation (predictions only, no "
+        f"reformat -- see the driver's warm-stage status report for the per-cluster reason): "
+        f"{sorted(_missing_annotation)}"
     )
 
 # Distinct datasets actually needed this run (a dataset whose clusters were all

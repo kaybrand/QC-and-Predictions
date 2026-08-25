@@ -52,6 +52,24 @@ output_dir: ./results
 pseudobulks_root: /scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026
 scE2G_version: "1.2"
 
+# Which stages this run performs. Overridable per-invocation with
+# `--config pipeline_mode=local_only` (top-level for exactly that reason).
+#
+#   default    -- everything: filtered fragments/RNA matrices, all scE2G targets,
+#                 portal-format reformatting, and (via the driver) IGVF manifest
+#                 generation. Requires a warm CellAnnotation cache, which
+#                 workflow/scripts/run_pipeline.py obtains before invoking
+#                 Snakemake. A bare `snakemake` in this mode aborts if the cache
+#                 projection is absent or stale, rather than silently dropping
+#                 the reformat targets.
+#   local_only -- everything that needs NO IGVF Portal contact whatsoever:
+#                 Phase 1 + Phase 2 output (predictions, candidates, features, QC
+#                 report, IGV tracks, EnhancerList and RNA matrix packaging). Never
+#                 opens state.db, never reads the CellAnnotation projection, never
+#                 requests a reformat target, never generates a manifest. Use it
+#                 when portal availability shouldn't be able to affect the run.
+pipeline_mode: default
+
 # Shared with manage_igvf_metadata.py (the IGVF metadata uploader) -- see
 # igvf_metadata/context.py's IgvfConfig for lab/award/alias_prefix/enabled_families
 # defaults, all overridable here. state_db_path points reformat.smk's own
