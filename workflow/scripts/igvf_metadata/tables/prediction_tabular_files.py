@@ -36,9 +36,8 @@ which delegate to the real filtered_atac_fragment_file / filtered_rna_count_matr
 TableSpecs (see refs.py's own docstring).
 
 bedpe/elements/genes path builders (2026-07-21 update): all three now resolve
-to real, already-produced pipeline outputs, and pick up the same
-file-existence-based enabled() that full/thresholded already use -- no other
-change needed.
+to real, already-produced pipeline outputs, and declare the same required_paths
+that full/thresholded do -- no other change needed.
 - elements/genes: reformat.smk's own reformat_lists rule (already in this
   pipeline) reformats the raw {cluster_dir}/{model}/scE2G_{element,gene}_list.tsv.gz
   scE2G output into the consortium-standard
@@ -151,12 +150,21 @@ def _genes_path(ctx):
     return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_multiome_v3_gene_list.tsv.gz")
 
 
-def _existing_file_enabled(path_fn):
+def _requires(path_fn):
+    """Declares the one pipeline output this variant describes. Replaces the old
+    _existing_file_enabled() gate (2026-08-24): a missing file is now reported by
+    the orchestrator as skipped-missing-file WITH the path, instead of collapsing
+    into the same silent skipped-disabled bucket as a deliberate semantic
+    exclusion like "genes under scATAC".
+
+    The old wrapper also carried an `except NotImplementedError: return False`
+    clause, which was dead code -- refs.py's stubs were all resolved, so nothing
+    in this chain raises it. Worse, it never caught what actually escapes here:
+    _score_threshold raises ValueError on 0 or >=2 score_threshold_* markers,
+    which is a REAL misconfiguration and must stay loud."""
+
     def _fn(ctx):
-        try:
-            return os.path.exists(path_fn(ctx))
-        except NotImplementedError:
-            return False
+        return [path_fn(ctx)]
 
     return _fn
 
@@ -263,9 +271,11 @@ def _dep(*extra):
 
 def _genes_enabled(ctx):
     # RNA count matrix + genes are Multiome-only data points (2026-07-16) --
-    # explicit family check, not just file-existence, so a stray file at the
-    # expected path could never produce a "genes" row under scATAC.
-    return family(ctx.model) == "Multiome" and _existing_file_enabled(_genes_path)(ctx)
+    # a real semantic gate, so a stray file at the expected path could never
+    # produce a "genes" row under scATAC. File existence is declared separately
+    # via required_paths, so "no gene list on disk" and "scATAC, so no gene list
+    # should exist" are reported as different outcomes rather than one bucket.
+    return family(ctx.model) == "Multiome"
 
 
 def _full_depends_on(ctx):
@@ -294,31 +304,32 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="full",
                 build_row=_full_row,
-                enabled=_existing_file_enabled(_full_path),
+                required_paths=_requires(_full_path),
                 depends_on=_full_depends_on,
             ),
             registry.VariantSpec(
                 name="thresholded",
                 build_row=_thresholded_row,
-                enabled=_existing_file_enabled(_thresholded_path),
+                required_paths=_requires(_thresholded_path),
                 depends_on=_dep((TABLE_NAME, "full")),
             ),
             registry.VariantSpec(
                 name="bedpe",
                 build_row=_bedpe_row,
-                enabled=_existing_file_enabled(_bedpe_path),
+                required_paths=_requires(_bedpe_path),
                 depends_on=_dep((TABLE_NAME, "thresholded")),
             ),
             registry.VariantSpec(
                 name="elements",
                 build_row=_elements_row,
-                enabled=_existing_file_enabled(_elements_path),
+                required_paths=_requires(_elements_path),
                 depends_on=_dep(("filtered_atac_fragment_file", "")),
             ),
             registry.VariantSpec(
                 name="genes",
                 build_row=_genes_row,
                 enabled=_genes_enabled,
+                required_paths=_requires(_genes_path),
                 depends_on=_dep(("filtered_rna_count_matrix", "")),
             ),
         ],

@@ -60,8 +60,8 @@ def _path(ctx):
     return os.path.join(ctx.multiome_data_cluster_dir, f"rna_count_matrix_{ctx.dataset}_{ctx.cluster}.tar.gz")
 
 
-def _enabled(ctx):
-    return os.path.exists(_path(ctx))
+def _required_paths(ctx):
+    return [_path(ctx)]
 
 
 def _row(ctx):
@@ -101,7 +101,7 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="",
                 build_row=_row,
-                enabled=_enabled,
+                required_paths=_required_paths,
                 depends_on=lambda ctx: [("principal_pseudobulk_set", ""), ("filtered_barcode_list", "")],
             ),
         ],

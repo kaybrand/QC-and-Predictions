@@ -85,6 +85,7 @@ cell_metadata.push_to_synapse() runs once at the end, re-publishing the
 space -- see cell_metadata.py for both.
 """
 
+import csv
 import os
 import sys
 from datetime import datetime, timezone
@@ -92,9 +93,41 @@ from datetime import datetime, timezone
 from . import cell_metadata, portal_client, registry, state
 from .context import Context
 
+# Per-dataset coverage artifact (manifest_dir/<dataset>/). Deliberately NOT one of
+# the round{N}_* submission files and never handed to iu_register.py -- it is the
+# audit trail for "what did this run decide about every row it could have built",
+# which is what makes a gap actionable instead of invisible.
+MANIFEST_COVERAGE_NAME = "manifest_coverage.tsv"
+MANIFEST_COVERAGE_HEADER = ["dataset", "cluster", "model", "table", "variant", "outcome", "reason"]
+
+# Outcomes that mean a row we EXPECTED is not in the manifest. Everything else is
+# either a real row (planned-post/planned-patch/unchanged) or a deliberate,
+# expected exclusion (skipped-family-gated) or a normal ordering wait (deferred).
+MANIFEST_GAP_OUTCOMES = frozenset({"skipped-missing-file", "invalid", "enabled-check-failed"})
+
 
 def log(msg):
     print(f"[igvf_metadata] {msg}", file=sys.stderr)
+
+
+def _group_by_dataset(rows):
+    grouped = {}
+    for row in rows:
+        grouped.setdefault(row["dataset"], []).append(row)
+    return grouped
+
+
+def write_coverage_tsv(path, rows):
+    """Full deterministic overwrite, sorted -- unlike the round{N}_* submission
+    files this is a complete snapshot of one run's decisions, so it should never
+    accumulate rows from an earlier run with different inputs."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=MANIFEST_COVERAGE_HEADER, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        for row in sorted(rows, key=lambda r: (r["cluster"], r["table"], r["variant"], r["model"])):
+            writer.writerow(row)
+    return path
 
 
 def _now():
@@ -204,28 +237,71 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
     the "unchanged" branch below). Feeds orchestrator.run()'s separate,
     durable per-(object_type, dataset) accumulator -- never handed to
     iu_register.py.
+
+    coverage: one row per (dataset, cluster, model, table, variant) this call
+    considered, with its `outcome` and a `reason`. EVERY branch below records
+    one, including the ones that skip -- that's the point. Previously a row
+    that didn't make it into to_post/to_patch left no trace beyond an
+    aggregate counter, so "the manifest is missing this cluster because an
+    upstream rule never produced its file" and "this row correctly doesn't
+    apply here" were indistinguishable in the output. See
+    MANIFEST_GAP_OUTCOMES for which outcomes are real gaps.
     """
-    to_post, to_patch, to_record = [], [], []
+    to_post, to_patch, to_record, coverage = [], [], [], []
     counts = {}
 
     def bump(key):
         counts[key] = counts.get(key, 0) + 1
 
+    def record_coverage(dataset, cluster, model_key, variant_name, outcome, reason=""):
+        coverage.append(
+            {
+                "dataset": dataset, "cluster": cluster, "model": model_key,
+                "table": table.name, "variant": variant_name,
+                "outcome": outcome, "reason": reason,
+            }
+        )
+
     for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
         ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir, conn=conn)
         model_key = model or ""
         for variant in table.variants:
-            # enabled() can do real I/O (e.g. prediction_tabular_files' score-threshold
-            # glob/parse) that can raise on a genuinely bad input (missing/duplicate
-            # marker file) -- must not let that crash the whole multi-cluster run.
+            # enabled() and required_paths() can both do real I/O (e.g.
+            # prediction_tabular_files' score-threshold glob/parse, which raises on a
+            # missing/duplicate marker file) -- must not let that crash the whole
+            # multi-cluster run. The message is preserved rather than swallowed: a
+            # duplicate score_threshold_* marker is a real misconfiguration to fix,
+            # not a row to quietly drop.
             try:
                 is_enabled = variant.enabled(ctx)
             except Exception as e:
                 log(f"ENABLED-CHECK FAILED {table.name}/{variant.name} for {dataset}/{cluster}/{model_key}: {e}")
                 bump("enabled-check-failed")
+                record_coverage(dataset, cluster, model_key, variant.name, "enabled-check-failed", str(e))
                 continue
             if not is_enabled:
-                bump("skipped-disabled")
+                # A deliberate semantic exclusion (e.g. "genes" under scATAC). Expected,
+                # distinct from a missing file, and never a manifest gap.
+                bump("skipped-family-gated")
+                record_coverage(dataset, cluster, model_key, variant.name, "skipped-family-gated")
+                continue
+
+            try:
+                missing_paths = [p for p in variant.required_paths(ctx) if not os.path.exists(p)]
+            except Exception as e:
+                log(f"PATH-CHECK FAILED {table.name}/{variant.name} for {dataset}/{cluster}/{model_key}: {e}")
+                bump("enabled-check-failed")
+                record_coverage(dataset, cluster, model_key, variant.name, "enabled-check-failed", str(e))
+                continue
+            if missing_paths:
+                # The row this manifest is supposed to describe has no file behind it.
+                # For a manifest-eligible cluster this always means an upstream rule
+                # didn't produce its output -- name the path so it's actionable.
+                log(f"MISSING FILE {table.name}/{variant.name} for {dataset}/{cluster}/{model_key}: {missing_paths[0]}")
+                bump("skipped-missing-file")
+                record_coverage(
+                    dataset, cluster, model_key, variant.name, "skipped-missing-file", ";".join(missing_paths)
+                )
                 continue
 
             item_alias = table.build_alias(ctx, variant.name)
@@ -249,6 +325,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                     # something not actually live yet -- wait for a later run.
                     log(f"DEFERRED {item_alias}: waiting on {deferred_on}")
                     bump("deferred")
+                    record_coverage(dataset, cluster, model_key, variant.name, "deferred", deferred_on)
                     continue
                 # preview/validate: build+write it anyway, tagged with its round,
                 # so the whole chain can be reviewed in one pass -- see module
@@ -261,12 +338,14 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
             except Exception as e:
                 log(f"VALIDATION FAILED {item_alias}: {e}")
                 bump("invalid")
+                record_coverage(dataset, cluster, model_key, variant.name, "invalid", str(e))
                 continue
 
             new_hash = state.payload_hash(payload)
             existing = state.get_upload(conn, dataset, cluster, model_key, table.name, variant.name)
             if existing and existing["status"] == "uploaded" and existing["payload_hash"] == new_hash:
                 bump("unchanged")
+                record_coverage(dataset, cluster, model_key, variant.name, "unchanged", item_alias)
                 to_record.append(
                     {"dataset": dataset, "object_type": table.object_type, "record_id": existing["portal_id"], "payload": payload}
                 )
@@ -285,6 +364,7 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                     }
                 )
                 bump("planned-post")
+                record_coverage(dataset, cluster, model_key, variant.name, "planned-post", item_alias)
             else:
                 record_id = portal_record.get("uuid") or portal_record.get("accession") or portal_record.get("@id")
                 to_patch.append(
@@ -294,8 +374,9 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                     }
                 )
                 bump("planned-patch")
+                record_coverage(dataset, cluster, model_key, variant.name, "planned-patch", item_alias)
 
-    return to_post, to_patch, to_record, counts
+    return to_post, to_patch, to_record, counts, coverage
 
 
 def _verify_and_record(conn, reader, rows):
@@ -384,14 +465,16 @@ def run(
     tables = [t for t in registry.all_specs() if table_names is None or t.name in table_names]
     round_cache = {}  # shared across every table this run -- see _compute_round
     accumulator_entries = []  # collected across every table -- see per-(object_type, dataset) write-out below
+    coverage_rows = []  # every (cluster, table, variant) and its outcome -- see write-out below
     report = {}
     for table in tables:
-        to_post, to_patch, to_record, counts = plan_table(
+        to_post, to_patch, to_record, counts, coverage = plan_table(
             conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, output_dir,
             mode, round_cache,
         )
         log(f"{table.name}: {counts}")
         accumulator_entries.extend(to_record)
+        coverage_rows.extend(coverage)
 
         # Group by (dataset, variant, round), not just table: a table whose variants
         # sit at different dependency layers (e.g. prediction_tabular_files' elements/
@@ -460,6 +543,19 @@ def run(
             path, [e["payload"] for e in entries], record_ids=[e["record_id"] for e in entries]
         )
         log(f"  -> {dataset}/{object_type}.tsv: {len(entries)} row(s) merged")
+
+    # Per-dataset manifest coverage: one row per (cluster, model, table, variant)
+    # this run considered, with its outcome and reason. This is the artifact that
+    # makes an incomplete manifest legible without reading every manifest TSV --
+    # "which clusters are in, and for the ones that aren't, exactly why". Written
+    # in every mode, including preview.
+    for dataset, rows in _group_by_dataset(coverage_rows).items():
+        path = os.path.join(manifest_dir, dataset, MANIFEST_COVERAGE_NAME)
+        write_coverage_tsv(path, rows)
+        outcomes = {}
+        for row in rows:
+            outcomes[row["outcome"]] = outcomes.get(row["outcome"], 0) + 1
+        log(f"  -> {dataset}/{MANIFEST_COVERAGE_NAME}: {len(rows)} row(s) {outcomes}")
 
     if mode == "upload":
         # Re-derive and re-push the shareable Cell Annotation table whenever a real

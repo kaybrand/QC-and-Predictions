@@ -33,7 +33,17 @@ _REGISTRY = {}
 class VariantSpec:
     name: str
     build_row: Callable  # (ctx) -> dict[str, Any]
-    enabled: Callable = lambda ctx: True  # (ctx) -> bool -- should this row exist at all this run
+    # SEMANTIC gate only: "should this row exist at all for this scope", e.g. a
+    # family check ("genes" is Multiome-only). Must NOT be used for file-existence
+    # checks -- see required_paths.
+    enabled: Callable = lambda ctx: True  # (ctx) -> bool
+    # (ctx) -> list[str]: pipeline output files this row describes and cannot be
+    # built without. Checked by the orchestrator, NOT by enabled(), so that a
+    # missing file is reported as "the upstream rule didn't produce this, here is
+    # the path" instead of collapsing into the same silent skipped-disabled bucket
+    # as a deliberate semantic exclusion. That conflation is what made an
+    # incomplete manifest read as a clean one.
+    required_paths: Callable = lambda ctx: []
     depends_on: Callable = lambda ctx: []  # (ctx) -> list[Dependency]
 
 

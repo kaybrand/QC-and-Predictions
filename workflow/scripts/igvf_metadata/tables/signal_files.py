@@ -45,8 +45,8 @@ def _path(ctx):
     return os.path.join(ctx.cluster_dir, "ATAC_norm.bw")
 
 
-def _enabled(ctx):
-    return os.path.exists(_path(ctx))
+def _required_paths(ctx):
+    return [_path(ctx)]
 
 
 def _row(ctx):
@@ -83,7 +83,7 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="atac_bw",
                 build_row=_row,
-                enabled=_enabled,
+                required_paths=_required_paths,
                 depends_on=lambda ctx: [("prediction_set", ""), ("filtered_atac_fragment_file", "")],
             ),
         ],

@@ -39,11 +39,8 @@ def _path(ctx):
     return refs.bedpe_prediction_path(ctx) + ".tbi"
 
 
-def _enabled(ctx):
-    try:
-        return os.path.exists(_path(ctx))
-    except NotImplementedError:
-        return False
+def _required_paths(ctx):
+    return [_path(ctx)]
 
 
 def _row(ctx):
@@ -81,7 +78,7 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="bedpe_index",
                 build_row=_row,
-                enabled=_enabled,
+                required_paths=_required_paths,
                 depends_on=lambda ctx: [("prediction_set", ""), ("prediction_tabular_files", "bedpe")],
             ),
         ],

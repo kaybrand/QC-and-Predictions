@@ -56,8 +56,8 @@ def _attachment_path(ctx):
     return os.path.join(ctx.data_dir, "plots", ctx.dataset, ctx.cluster, "qc_thresholds.tsv")
 
 
-def _enabled(ctx):
-    return os.path.exists(_attachment_path(ctx))
+def _required_paths(ctx):
+    return [_attachment_path(ctx)]
 
 
 def _row(ctx):
@@ -76,7 +76,7 @@ TABLE = registry.register(
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "document_type", "attachment"],
         variants=[
-            registry.VariantSpec(name="", build_row=_row, enabled=_enabled),
+            registry.VariantSpec(name="", build_row=_row, required_paths=_required_paths),
         ],
     )
 )
