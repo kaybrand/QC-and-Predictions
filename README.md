@@ -140,7 +140,7 @@ and `validate`.
 - **`local_only`** — everything that needs no Portal contact whatsoever
   (filtered fragments/RNA matrices, all scE2G predictions/candidates/features,
   QC report, IGV tracks, EnhancerList and RNA matrix packaging). It never opens
-  `state.db`, never reads the CellAnnotation projection, and requests no
+  `state.db`, never reads the CellAnnotation snapshot, and requests no
   reformat target — so Portal availability cannot affect it. Set per-run with
   `pipeline_mode` in the config or `--config pipeline_mode=local_only`.
 
@@ -237,7 +237,7 @@ holds, and no dataset depends on another running first.
 Tabular Files) only run for a `(dataset, cluster)` with a real, cached
 CellAnnotation row already in `state.db` — computed at Snakemake parse time
 as `common.smk`'s `REFORMAT_ELIGIBLE_CLUSTERS` (read from the driver-written
-projection described below), keyed through
+snapshot described below), keyed through
 `cell_annotations.py`'s `annotation_lookup_key()` (which resolves an
 ATAC-only variant cluster's real CellAnnotation under its base, non-suffixed
 name). **A quality-passing cluster with no cached CellAnnotation yet still
@@ -252,11 +252,11 @@ parse time — and every Slurm worker re-parses the workflow, so several
 concurrent dataset drivers meant worker-node reads on many hosts overlapping
 another driver's writes. `state.db` is on Lustre in WAL mode, whose
 shared-memory index is only supported on a single host. Snakemake now reads
-`{output_dir}/igvf_metadata/{dataset}_cell_annotations.tsv`, a temp projection
+`{output_dir}/igvf_metadata/{dataset}_cell_annotations.tsv`, a temp snapshot
 the driver writes immediately beforehand and deletes afterwards, carrying the
 portal fetch timestamp and a digest of the cluster set — both enforced on read,
 so a stale or foreign file raises instead of quietly reporting nothing
-annotated. See `workflow/scripts/cell_annotation_projection.py`.
+annotated. See `workflow/scripts/cell_annotation_snapshot.py`.
 
 ### Portal-facing packaging generated directly by this pipeline
 

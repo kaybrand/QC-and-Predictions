@@ -12,7 +12,7 @@ Five stages, in order, stopping according to the failure policy below:
   [1] warm       DEFAULT MODE ONLY. Under an flock: fetch_if_stale (one wholesale
                  portal GET, 24h TTL) then derive_scopes (pure local) to build
                  this dataset's cell_annotations rows. Writes the CellAnnotation
-                 projection Snakemake reads, plus a per-cluster status TSV.
+                 snapshot Snakemake reads, plus a per-cluster status TSV.
   [2] snakemake  ONE invocation. --conda-prefix and --rerun-triggers mtime are
                  baked in because forgetting either has caused real incidents.
                  No --omit-from, ever: local_only makes the reformat targets
@@ -49,7 +49,7 @@ fetch populated it:
 
 The first driver to find a stale TTL does the single wholesale GET; the rest reuse
 it. The flock keeps their state.db writes serialised, and no Snakemake worker ever
-opens state.db (see cell_annotation_projection.py).
+opens state.db (see cell_annotation_snapshot.py).
 """
 
 import argparse
@@ -67,7 +67,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 sys.path.insert(0, SCRIPT_DIR)
 
-import cell_annotation_projection as cap  # noqa: E402
+import cell_annotation_snapshot as cas  # noqa: E402
 from resolve_exclusions import resolve_exclusions, manifest_eligible_clusters  # noqa: E402
 from cell_annotations import annotation_lookup_key  # noqa: E402
 from igvf_metadata import orchestrator  # noqa: E402
@@ -196,7 +196,7 @@ def preflight(args):
         log("stages              : [0] preflight -> [1] warm -> [2] snakemake -> "
             f"[3] manifest ({args.manifest_mode}) -> [4] audit")
 
-    plan_dir = os.path.join(output_dir, cap.PROJECTION_DIR_NAME)
+    plan_dir = os.path.join(output_dir, cas.SNAPSHOT_DIR_NAME)
     os.makedirs(plan_dir, exist_ok=True)
     for dataset in datasets:
         path = os.path.join(plan_dir, PLAN_NAME.format(dataset=dataset))
@@ -239,7 +239,7 @@ def warm(ctx, dry_run):
         (d, c): cfg for d, clusters in config["clusters"].items() for c, cfg in clusters.items()
     }
     cluster_keys = set(cluster_configs)
-    digest = cap.cluster_set_digest(cluster_keys)
+    digest = cas.cluster_set_digest(cluster_keys)
 
     ok = True
     with state_db_lock(state_db, "warm"):
@@ -250,7 +250,7 @@ def warm(ctx, dry_run):
             log(f"raw primary-pseudobulk cache: {n_primary} row(s), last portal fetch {last_fetch}")
 
             if dry_run:
-                log("dry run: NOT fetching and NOT deriving. Projecting whatever is already cached, "
+                log("dry run: NOT fetching and NOT deriving. Snapshotting whatever is already cached, "
                     "so the snakemake preview reflects the current cache rather than a hypothetical one.")
                 statuses = [
                     {
@@ -275,25 +275,25 @@ def warm(ctx, dry_run):
                         "and this run will exit non-zero.")
                 statuses = cell_metadata.derive_scopes(conn, cluster_keys, cluster_configs)
 
-            # Projection: what Snakemake will actually read. Written per dataset,
+            # Snapshot: what Snakemake will actually read. Written per dataset,
             # from state.db's rows, immediately before stage 2.
             for dataset in ctx["datasets"]:
                 rows = [
                     dict(r) for r in state.all_cell_annotations(conn) if r["dataset"] == dataset
                 ]
-                path = cap.write_projection(
-                    cap.projection_path(output_dir, dataset),
+                path = cas.write_snapshot(
+                    cas.snapshot_path(output_dir, dataset),
                     rows,
                     fetched_at=state.latest_cell_annotation_fetch(conn) or "",
                     digest=digest,
                 )
-                log(f"wrote projection {path} ({len(rows)} annotation row(s))")
+                log(f"wrote snapshot {path} ({len(rows)} annotation row(s))")
         finally:
             conn.close()
 
     # Per-cluster status: the answer to "why isn't this cluster reformatted".
     for dataset in ctx["datasets"]:
-        path = os.path.join(output_dir, cap.PROJECTION_DIR_NAME, WARM_STATUS_NAME.format(dataset=dataset))
+        path = os.path.join(output_dir, cas.SNAPSHOT_DIR_NAME, WARM_STATUS_NAME.format(dataset=dataset))
         with open(path, "w", newline="") as f:
             w = csv.writer(f, delimiter="\t", lineterminator="\n")
             w.writerow(["dataset", "cluster", "resolved", "reason", "cell_annotation"])
@@ -450,7 +450,7 @@ def main():
             f"{len(ctx['manifest_eligible'])} manifest-eligible")
 
     rc_snakemake = 0
-    projection_paths = [cap.projection_path(ctx["output_dir"], d) for d in ctx["datasets"]]
+    snapshot_paths = [cas.snapshot_path(ctx["output_dir"], d) for d in ctx["datasets"]]
     try:
         if args.skip_snakemake:
             stage_header(2, "snakemake", "SKIPPED (--skip-snakemake)")
@@ -460,14 +460,14 @@ def main():
             if rc_snakemake != 0:
                 degraded.append(f"snakemake exited {rc_snakemake}")
     finally:
-        # The projection is a temp artifact: removing it means a later bare
+        # The snapshot is a temp artifact: removing it means a later bare
         # `snakemake` in default mode aborts pointing at this driver rather than
         # silently dropping the reformat targets, and no stale values can ever
         # carry into a future run.
         if mode == "default" and not args.skip_snakemake:
-            for path in projection_paths:
-                if cap.remove_projection(path):
-                    log(f"removed temp projection {path}")
+            for path in snapshot_paths:
+                if cas.remove_snapshot(path):
+                    log(f"removed temp snapshot {path}")
 
     problems = []
     if mode != "default":

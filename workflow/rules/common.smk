@@ -43,12 +43,12 @@ from write_scE2G_config import (  # noqa: E402
 from pipeline_paths import resolve_repo_relative  # noqa: E402
 from cell_annotations import annotation_lookup_key  # noqa: E402
 
-# Read-only projection of state.db's cell_annotations, written by the driver
+# Read-only snapshot of state.db's cell_annotations, written by the driver
 # before Snakemake starts. Replaces the former `from igvf_metadata import state`
 # parse-time SQLite connection -- every Slurm worker re-parses this file, and
 # multi-host WAL access to a Lustre-hosted SQLite DB is not supported. Nothing
 # under workflow/rules/ opens state.db any more.
-import cell_annotation_projection as cap  # noqa: E402
+import cell_annotation_snapshot as cas  # noqa: E402
 
 # Consolidated OUTPUT root for everything this pipeline WRITES (filtered
 # ATAC/RNA outputs, scE2G's own results tree, Synapse manifests, cluster-stats
@@ -184,7 +184,7 @@ for _stats_dataset in config["clusters"]:
 #   local_only -- everything Phase 1 + Phase 2 produce: filtered fragments/RNA
 #                 matrices, scE2G predictions/candidates/features, QC report, IGV
 #                 tracks, EnhancerList + RNA matrix packaging. NEVER opens
-#                 state.db, never reads the CellAnnotation projection, never
+#                 state.db, never reads the CellAnnotation snapshot, never
 #                 requests a reformat target. Not "reads the cache and finds
 #                 nothing" -- genuinely no contact, so a cold/absent/locked cache
 #                 cannot affect it at all. Formalises what used to be an
@@ -202,11 +202,11 @@ if PIPELINE_MODE not in ("default", "local_only"):
 # CellAnnotation still gets full predictions/candidates/features -- it's just not
 # reformatted into portal format.
 #
-# Read from the per-dataset projection the driver writes (see
-# scripts/cell_annotation_projection.py for why this is a file and not the
+# Read from the per-dataset snapshot the driver writes (see
+# scripts/cell_annotation_snapshot.py for why this is a file and not the
 # state.db query it replaced: every Slurm worker re-parses this file, and
 # multi-host WAL access to a Lustre-hosted SQLite DB is unsupported). The
-# projection is timestamp- and digest-checked on read, so unlike the
+# snapshot is timestamp- and digest-checked on read, so unlike the
 # manually-refreshed preview TSV this pipeline used to gate on -- which once
 # claimed a cluster was annotated while state.db was cold, crashing a reformat
 # rule for real (commit b6e62e0) -- a stale or foreign one raises instead of
@@ -223,19 +223,19 @@ if PIPELINE_MODE == "local_only":
         "scE2G output. No state.db or CellAnnotation-cache access at all."
     )
 else:
-    _max_age = config.get("igvf", {}).get("cache_max_age_hours", cap.DEFAULT_MAX_AGE_HOURS)
-    _digest = cap.cluster_set_digest(
+    _max_age = config.get("igvf", {}).get("cache_max_age_hours", cas.DEFAULT_MAX_AGE_HOURS)
+    _digest = cas.cluster_set_digest(
         {(d, c) for d, clusters in config["clusters"].items() for c in clusters}
     )
     for _dataset in config["clusters"]:
         CELL_ANNOTATIONS.update(
-            cap.read_projection(
-                cap.projection_path(OUTPUT_DIR, _dataset),
+            cas.read_snapshot(
+                cas.snapshot_path(OUTPUT_DIR, _dataset),
                 expected_digest=_digest,
                 max_age_hours=_max_age,
                 fix_hint=(
                     "run the pipeline through workflow/scripts/run_pipeline.py (it warms the cache and "
-                    "writes this projection before invoking Snakemake), or pass "
+                    "writes this snapshot before invoking Snakemake), or pass "
                     "--config pipeline_mode=local_only to skip everything that needs the portal."
                 ),
             )

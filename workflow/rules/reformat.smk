@@ -35,8 +35,8 @@ build_alias, the single source of truth for that formula -- not reimplemented
 here), which the R script spells out into a full https://data.igvf.org/... URL.
 
 2026-08-24: portal_cell_metadata() now reads common.smk's CELL_ANNOTATIONS -- the
-driver-written, timestamp- and digest-checked projection of state.db's
-cell_annotations (workflow/scripts/cell_annotation_projection.py) -- rather than
+driver-written, timestamp- and digest-checked snapshot of state.db's
+cell_annotations (workflow/scripts/cell_annotation_snapshot.py) -- rather than
 opening state.db itself. Nothing under workflow/rules/ connects to that database
 any more: every Slurm worker re-parses this file, state.db lives on Lustre in WAL
 mode, and WAL's shared-memory index is not supported across hosts.
@@ -63,8 +63,8 @@ def portal_cell_metadata(dataset, cluster):
     "cell_qualifier":..., ...} for (dataset, cluster) -- see this module's
     docstring for which of these fields feeds which header field.
 
-    Reads common.smk's CELL_ANNOTATIONS, the driver-written projection of
-    state.db's cell_annotations (see scripts/cell_annotation_projection.py). No
+    Reads common.smk's CELL_ANNOTATIONS, the driver-written snapshot of
+    state.db's cell_annotations (see scripts/cell_annotation_snapshot.py). No
     SQLite connection here any more: this function is called from `params`
     lambdas, which every Slurm worker evaluates after re-parsing the workflow,
     and multi-host WAL access to a Lustre-hosted DB is unsupported.
@@ -86,7 +86,7 @@ def portal_cell_metadata(dataset, cluster):
     row = CELL_ANNOTATIONS.get(annotation_lookup_key(dataset, cluster, config["clusters"][dataset][cluster]))
     if row is None:
         raise ValueError(
-            f"{dataset}/{cluster}: no Cell Annotation in the projection -- this cluster's portal "
+            f"{dataset}/{cluster}: no Cell Annotation in the snapshot -- this cluster's portal "
             "primaries didn't resolve. See the driver's warm-stage status report for the reason."
         )
     return row
