@@ -301,7 +301,7 @@ rule reformat_element_list:
     shell:
         """
         {{
-            echo "# Source: ABC_element_list"
+            echo "# Source: ABC (originally EnhancerList.bed)"
             echo "# Version: {params.version}"
             echo "# GenomeReference: IGVFDS0280IQAI"
             echo "# URL: https://github.com/EngreitzLab/scE2G/tree/main"
