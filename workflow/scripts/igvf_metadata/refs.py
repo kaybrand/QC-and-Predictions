@@ -92,6 +92,15 @@ def bedpe_prediction_path(ctx):
     return _bedpe_path(ctx)
 
 
+def elements_bed_path(ctx):
+    """Reaches into prediction_tabular_files' private _elements_bed_path so
+    other tables (e.g. elements_bed_index_file) that need the elements BED
+    file's own path don't duplicate that formula."""
+    from .tables.prediction_tabular_files import _elements_bed_path
+
+    return _elements_bed_path(ctx)
+
+
 def atac_fragment_alias(ctx):
     """The ATAC fragment FILE (submitted_file_name) -- for derived_from-shaped
     fields. Callers must also depends_on ("filtered_atac_fragment_file", "")."""

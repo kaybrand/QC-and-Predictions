@@ -22,7 +22,6 @@ it's enforced once, centrally, in orchestrator._iter_scopes via
 IgvfConfig.enabled_families, shared by every scope="cluster_model" table.
 """
 
-import os
 
 from .. import refs, registry
 from ..context import make_alias
