@@ -117,6 +117,49 @@ def _group_by_dataset(rows):
     return grouped
 
 
+def _retire_superseded_sibling(manifest_dir, dataset, table_name, suffix, round_num, kind):
+    """Keep at most one of {post, patch} per (dataset, table, variant, round),
+    without ever leaving zero.
+
+    Called immediately AFTER the replacement has been written, so there is no
+    code path here that deletes a file whose successor doesn't already exist on
+    disk. That matters because in a preview-only workflow these round*.tsv files
+    are the ONLY on-disk record of a row's field values and submitted_file_name --
+    the durable {object_type}.tsv accumulator only ever receives rows already
+    confirmed live (plan_table's "unchanged" branch and _verify_and_record), so it
+    stays empty until something is really uploaded through this tool. Deleting the
+    last file would destroy the record.
+
+    Deliberately ONE-DIRECTIONAL. Aliases are stable per object type, so the real
+    progression is: absent -> post -> live -> patch, terminally.
+      - Writing a PATCH retires a stale POST: those objects are live, so the POST
+        can never be the right instruction again.
+      - Writing a POST does NOT retire a PATCH. That direction is backwards, and
+        plan_table's own lookup can produce it spuriously -- it calls
+        get_by_alias() WITHOUT database=True (orchestrator.py's plan_table), i.e.
+        the Elasticsearch-backed read that _verify_and_record's own comment
+        documents as able to "falsely report 'not found'". Silently dropping a
+        good patch file on a transient false negative would lose real work, so
+        this warns and leaves both for a human instead.
+    """
+    sibling_kind = "post" if kind == "patch" else "patch"
+    sibling = os.path.join(manifest_dir, dataset, f"round{round_num}_{table_name}{suffix}_{sibling_kind}.tsv")
+    if not os.path.exists(sibling):
+        return None
+
+    if kind == "patch":
+        os.remove(sibling)
+        log(f"  retired superseded {dataset}/{os.path.basename(sibling)} (its rows are live; patch written)")
+        return sibling
+
+    log(
+        f"  WARNING {dataset}/{os.path.basename(sibling)} exists but this round planned a POST -- "
+        "either those objects were deleted portal-side, or the alias lookup lagged and reported them "
+        "absent. Left BOTH files in place; confirm which is right before submitting either."
+    )
+    return None
+
+
 def write_coverage_tsv(path, rows):
     """Full deterministic overwrite, sorted -- unlike the round{N}_* submission
     files this is a complete snapshot of one run's decisions, so it should never
@@ -504,6 +547,7 @@ def run(
                 )
             table_report["files"].append(written)
             log(f"  -> {dataset}/{fname}: {len(entries)} row(s)")
+            _retire_superseded_sibling(manifest_dir, dataset, table.name, suffix, round_num, kind)
 
             if mode != "preview" and written:
                 result = portal_client.invoke_register(
