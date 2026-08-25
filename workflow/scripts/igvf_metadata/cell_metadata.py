@@ -81,6 +81,16 @@ defeating the entire point of a cache meant to hold what the portal
 actually has. cell_annotations remains a stricter, derived, per-cluster
 view (still useful for Principal Pseudobulk Set's consistency-checked
 cell_type/cell_qualifier), built FROM the raw tables, not instead of them.
+
+2026-08-24 split: refresh_if_stale is now a thin wrapper over fetch_if_stale
+(network, global-TTL-gated, wholesale) and derive_scopes (pure local, no TTL
+gate, runs every time). Conflating them was a real bug -- the TTL is one GLOBAL
+row, so warming for dataset A made it fresh and dataset B's later invocation
+returned early BEFORE ever reaching the derivation loop, leaving B's clusters
+permanently uncached even though the raw rows they needed were already cached.
+Split apart, a dataset whose config is written weeks after the fetch still
+derives its own cell_annotations offline, and no dataset depends on another
+running first. See those two functions for details.
 """
 
 import csv
@@ -178,18 +188,31 @@ def _term_id_from_cell_type(cell_type):
 
 
 def _local_subsamples(cluster_keys, cluster_configs):
-    """{(dataset, cluster): [local subsample ids, most-to-least contributing]} --
-    one entry per local scope. Ordered by descending cell count in that
-    cluster's own filtered barcode QC guide (subsamples.subsamples_by_frequency
-    -- same ordering already used for Prediction Set's/Principal Pseudobulk
-    Set's own `samples` field) rather than an unordered set, so
-    refresh_if_stale can resolve cell_annotation/cell_qualifier disagreement
-    by picking the most-contributing subsample's own values."""
+    """({(dataset, cluster): [local subsample ids, most-to-least contributing]},
+    {(dataset, cluster): reason}) -- the first dict has one entry per readable
+    local scope, the second names the scopes whose QC guide couldn't be read at
+    all. Ordered by descending cell count in that cluster's own filtered barcode
+    QC guide (subsamples.subsamples_by_frequency -- same ordering already used
+    for Prediction Set's/Principal Pseudobulk Set's own `samples` field) rather
+    than an unordered set, so derive_scopes can resolve cell_annotation/
+    cell_qualifier disagreement by picking the most-contributing subsample's own
+    values.
+
+    An unreadable guide is REPORTED, not raised: this runs across every cluster
+    in a pipeline config, and one missing/corrupt guide must not stop every
+    other scope from resolving -- the same try/except-and-log-and-continue
+    discipline the per-scope anomaly handling in derive_scopes already uses."""
     by_scope = {}
+    unreadable = {}
     for dataset, cluster in cluster_keys:
         ctx = Context(dataset, cluster, None, cluster_configs[(dataset, cluster)], None, None, None)
-        by_scope[(dataset, cluster)] = subsamples.subsamples_by_frequency(ctx)
-    return by_scope
+        try:
+            by_scope[(dataset, cluster)] = subsamples.subsamples_by_frequency(ctx)
+        except (OSError, KeyError) as e:
+            # OSError: guide absent/unreadable. KeyError: present but missing the
+            # "subsample" column, i.e. not actually a QC guide.
+            unreadable[(dataset, cluster)] = f"unreadable_qc_guide: {type(e).__name__}: {e}"
+    return by_scope, unreadable
 
 
 def _alias_suffix(alias):
@@ -200,32 +223,47 @@ def _alias_suffix(alias):
     return alias.split(":", 1)[-1] if alias and ":" in alias else alias
 
 
-def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
-    """One multireport GET per stale cache, shared across every (dataset,
-    cluster) in this run -- not one GET per cluster. Callers invoked once
-    per cluster (e.g. the pipeline-integrated hook, one cluster at a time --
-    see orchestrator.py's own module docstring) still only hit the network
-    once per 24h, as long as they share the same --state-db: the 2nd/3rd/...
-    invocation's staleness check finds the 1st invocation's fetch still
-    fresh and returns here without ever calling reader.get_multireport."""
+def fetch_if_stale(conn, reader):
+    """The NETWORK half. One wholesale multireport GET per stale cache, saving
+    EVERY primary/principal pseudobulk row the portal returns to the raw cache
+    tables. Returns True if a GET actually happened, False if the cache was
+    still fresh.
+
+    Deliberately knows nothing about which clusters anyone cares about: the
+    GET's scope is "every PseudobulkSet on the portal", and all of it is saved
+    unconditionally (see the module docstring's 2026-07-22 correction). Turning
+    that raw cache into the per-(dataset, cluster) `cell_annotations` view is
+    derive_scopes' job, and needs no network at all.
+
+    Split out of the former refresh_if_stale (2026-08-24) because the two halves
+    have genuinely different staleness semantics, and conflating them was a real
+    bug. The TTL is a single GLOBAL row, so warming for one dataset made it
+    fresh, and every LATER dataset's invocation returned early -- before ever
+    reaching the derivation loop -- leaving those clusters permanently uncached
+    even though the raw data they needed was already sitting in the cache.
+    Confirmed against the live DB (2026-08-24): 1039 primary rows cached, 62 of
+    them igvf0's, while igvf0 had zero `cell_annotations` rows.
+    """
     last_fetch = state.latest_cell_annotation_fetch(conn)
     if not _is_stale(last_fetch):
         log(f"cell_annotations cache still fresh (last fetched {last_fetch}) -- skipping multireport GET")
-        return
+        return False
     log(f"cell_annotations cache {'empty' if not last_fetch else 'stale'} -- issuing multireport GET")
 
     rows = reader.get_multireport(_MULTIREPORT_QUERY)
     now = _now()
-    # Recorded unconditionally, before any per-scope validation below: the TTL is about
+    # Recorded unconditionally, before any per-scope validation: the TTL is about
     # "did we hit the network recently," not "did every scope's data validate cleanly."
     # A round where every scope fails local-subset-of-portal validation must still count
     # as fetched, or the next invocation re-GETs immediately instead of waiting out the TTL.
+    #
+    # Recorded AFTER get_multireport returns, deliberately: a failed GET must not
+    # poison the TTL, or a concurrent second driver would see a phantom "fresh"
+    # cache and skip a fetch that never actually succeeded.
     state.record_cell_annotations_fetch(conn, now)
-    local_by_scope = _local_subsamples(cluster_keys, cluster_configs)
 
-    principal_by_annotation = {}
-    primary_by_alias_suffix = {}  # "{dataset}-{cluster}-{subsample}" -> its portal row
     saved_primary_count = 0
+    saved_principal_count = 0
     skipped_no_alias = 0
     for row in rows:
         kind = pseudobulk_sets.classify(row)
@@ -234,10 +272,10 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             aliases = row.get("aliases") or []
             alias = aliases[0] if aliases else None
             if annotation and alias:
-                principal_by_annotation[annotation] = alias
                 # Saved unconditionally -- this is the "already locked in" evidence,
                 # independent of whether any local cluster currently references it.
                 state.upsert_principal_pseudobulk(conn, alias, annotation, now)
+                saved_principal_count += 1
             continue
         if kind != "primary":
             continue
@@ -270,12 +308,56 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             now,
         )
         saved_primary_count += 1
-        primary_by_alias_suffix[_alias_suffix(alias)] = row
 
     log(
         f"saved {saved_primary_count} primary pseudobulk row(s) ({skipped_no_alias} skipped for lacking an alias) "
-        f"and {len(principal_by_annotation)} principal pseudobulk row(s) to the raw cache"
+        f"and {saved_principal_count} principal pseudobulk row(s) to the raw cache"
     )
+    return True
+
+
+def derive_scopes(conn, cluster_keys, cluster_configs):
+    """The LOCAL half. Builds the per-(dataset, cluster) `cell_annotations` view
+    from the already-cached raw tables plus each cluster's own QC guide. Makes
+    NO network call and has NO TTL gate -- it runs every time, so a dataset
+    whose config was written long after the fetch still gets its own rows from
+    whatever the raw cache already holds.
+
+    Returns [{dataset, cluster, resolved, reason, cell_annotation}] -- one entry
+    per requested scope, so a caller can report exactly which clusters resolved
+    and why the rest didn't, instead of a resolved scope and an unresolved one
+    being indistinguishable.
+
+    Reads the FLATTENED raw rows (state.all_primary_pseudobulks /
+    all_principal_pseudobulks) rather than live portal response objects, so
+    cl_id/term_id/term_name come straight off the cached columns -- the
+    _*_from_cell_type() unpacking happens once, in fetch_if_stale, on the way in.
+
+    Every per-scope validation rule from the former refresh_if_stale is preserved
+    exactly: a local subsample with no matching portal alias, or disagreement on
+    (cl_id, term_id, term_name), skips the scope; cell_annotation/cell_qualifier
+    disagreement is resolved via the most-contributing subsample. See the module
+    docstring for why those two anomalies get different treatment.
+    """
+    now = _now()
+    local_by_scope, unreadable = _local_subsamples(cluster_keys, cluster_configs)
+    statuses = []
+    for (dataset, cluster), reason in sorted(unreadable.items()):
+        log(f"{dataset}/{cluster}: {reason} -- cannot derive this scope's Cell Annotation")
+        statuses.append(
+            {"dataset": dataset, "cluster": cluster, "resolved": False, "reason": reason, "cell_annotation": None}
+        )
+
+    primary_by_alias_suffix = {
+        _alias_suffix(raw["alias"]): raw for raw in state.all_primary_pseudobulks(conn)
+    }
+    principal_by_annotation = {
+        raw["cell_annotation"]: raw["alias"]
+        for raw in state.all_principal_pseudobulks(conn)
+        if raw["cell_annotation"] and raw["alias"]
+    }
+    if not primary_by_alias_suffix:
+        log("raw primary-pseudobulk cache is empty -- nothing to derive from (fetch_if_stale first)")
 
     matched_suffixes = set()
     for (dataset, cluster), local_subsamples in local_by_scope.items():
@@ -295,6 +377,15 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
                 f"portal -- skipping this scope's cache until resolved (expected for primaries uploaded "
                 f"under a different alias convention -- see module docstring)"
             )
+            statuses.append(
+                {
+                    "dataset": dataset,
+                    "cluster": cluster,
+                    "resolved": False,
+                    "reason": f"no_matching_primary_alias: {','.join(sorted(missing_locally))}",
+                    "cell_annotation": None,
+                }
+            )
             continue
         scope_rows = [primary_by_alias_suffix[suffix] for suffix in candidate_suffixes]
 
@@ -305,19 +396,21 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
         # cell types got merged under one cluster name. That's a real data problem to
         # flag and investigate, not to silently paper over -- skip this scope's cache,
         # same as a missing-subsample scope.
-        term_triples = {
-            (
-                _cl_id_from_cell_type(r.get("cell_type")),
-                _term_id_from_cell_type(r.get("cell_type")),
-                _term_name_from_cell_type(r.get("cell_type")),
-            )
-            for r in scope_rows
-        }
+        term_triples = {(r["cl_id"], r["term_id"], r["term_name"]) for r in scope_rows}
         if len(term_triples) != 1:
             log(
                 f"WARNING {dataset}/{cluster}: {len(term_triples)} distinct (cl_id, term_id, term_name) "
                 f"triples across its primary pseudobulks -- this should never happen (these are supposed "
                 f"to always agree, unlike cell_annotation) -- skipping this scope's cache until investigated"
+            )
+            statuses.append(
+                {
+                    "dataset": dataset,
+                    "cluster": cluster,
+                    "resolved": False,
+                    "reason": f"cell_type_disagreement: {len(term_triples)} distinct (cl_id, term_id, term_name)",
+                    "cell_annotation": None,
+                }
             )
             continue
         cl_id, term_id, term_name = next(iter(term_triples))
@@ -326,7 +419,7 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
         # most-contributing subsample (local_subsamples is ordered most-to-least
         # contributing, see _local_subsamples) rather than requiring unanimous
         # agreement across every contributing subsample.
-        annotation_qualifier_pairs = {(r.get("cell_annotation"), r.get("cell_qualifier")) for r in scope_rows}
+        annotation_qualifier_pairs = {(r["cell_annotation"], r["cell_qualifier"]) for r in scope_rows}
         winning_subsample = local_subsamples[0]
         winning_row = primary_by_alias_suffix[f"{dataset}-{cluster}-{winning_subsample}"]
         if len(annotation_qualifier_pairs) != 1:
@@ -335,11 +428,33 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
                 f"Qualifier pairs across its primary pseudobulks -- resolved using the most-contributing "
                 f"subsample ({winning_subsample})"
             )
-        cell_annotation = winning_row.get("cell_annotation")
-        cell_qualifier = winning_row.get("cell_qualifier")
+        cell_annotation = winning_row["cell_annotation"]
+        cell_qualifier = winning_row["cell_qualifier"]
 
-        all_primary_released = all(r.get("status") == "released" for r in scope_rows)
+        all_primary_released = all(r["status"] == "released" for r in scope_rows)
         principal_alias = principal_by_annotation.get(cell_annotation)
+
+        # cell_annotations declares cell_annotation/cl_id/term_id/term_name NOT NULL,
+        # so a portal row missing any of them would raise IntegrityError mid-loop and
+        # take down every remaining scope's derivation with it. Check first and report
+        # this scope instead -- same per-scope-skip discipline as the anomalies above.
+        blank = [
+            name
+            for name, value in (
+                ("cell_annotation", cell_annotation), ("cl_id", cl_id),
+                ("term_id", term_id), ("term_name", term_name),
+            )
+            if not value
+        ]
+        if blank:
+            log(f"{dataset}/{cluster}: portal primaries have no {'/'.join(blank)} -- skipping this scope's cache")
+            statuses.append(
+                {
+                    "dataset": dataset, "cluster": cluster, "resolved": False,
+                    "reason": f"blank_required_field: {','.join(blank)}", "cell_annotation": None,
+                }
+            )
+            continue
 
         state.upsert_cell_annotation(
             conn,
@@ -356,14 +471,32 @@ def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
             principal_alias,
             now,
         )
+        statuses.append(
+            {"dataset": dataset, "cluster": cluster, "resolved": True, "reason": "ok", "cell_annotation": cell_annotation}
+        )
 
     unmatched = set(primary_by_alias_suffix) - matched_suffixes
     if unmatched:
         log(
-            f"{len(unmatched)} portal primary pseudobulk(s) whose alias didn't match any local "
-            f"(dataset, cluster, subsample) candidate this run (still saved to the raw cache above -- "
-            f"just not part of any currently-configured local cluster's derived group)"
+            f"{len(unmatched)} cached primary pseudobulk(s) whose alias didn't match any local "
+            f"(dataset, cluster, subsample) candidate among the {len(cluster_keys)} scope(s) requested "
+            f"here -- still in the raw cache, just not part of any of THESE clusters' derived groups "
+            f"(another dataset's own derive_scopes call will pick up the ones that belong to it)"
         )
+    resolved = sum(1 for s in statuses if s["resolved"])
+    log(f"derived {resolved}/{len(statuses)} requested scope(s) into cell_annotations")
+    return statuses
+
+
+def refresh_if_stale(conn, reader, cluster_keys, cluster_configs):
+    """Back-compat entry point, unchanged signature: fetch (network, TTL-gated)
+    then derive (local, always). Callers invoked once per cluster still only hit
+    the network once per 24h, as long as they share the same --state-db -- but
+    unlike before, each one now derives its OWN scopes from the raw cache
+    regardless of whose fetch populated it. See fetch_if_stale for the bug this
+    split fixes."""
+    fetch_if_stale(conn, reader)
+    return derive_scopes(conn, cluster_keys, cluster_configs)
 
 
 def get_metadata_for(ctx):
