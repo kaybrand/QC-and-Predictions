@@ -55,8 +55,9 @@ pseudobulk file aliases above + the filtered_barcode_list alias) are
 sufficient.
 
 plotting_analysis_step_version_alias() (2026-07-29): resolved to the real
-portal analysis step version /analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/
-for Filtered Barcode Lists.
+portal analysis step version for Filtered Barcode Lists. Updated 2026-08-25
+to /analysis-step-versions/0077c8e1-f3f7-4e4e-b79e-6e6560820c9b/, replacing
+/analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/.
 
 qc_guide_to_atac_fragment_analysis_step_version_alias() /
 qc_guide_to_rna_matrix_analysis_step_version_alias() (2026-07-29): both
@@ -71,7 +72,10 @@ from .context import make_alias
 
 # Shared by qc_guide_to_atac_fragment_analysis_step_version_alias and
 # qc_guide_to_rna_matrix_analysis_step_version_alias -- see module docstring.
-_PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/"
+# The principal-pseudobulk analysis step version, shared by Filtered ATAC
+# Fragment File, Filtered RNA Count Matrix and ATAC Index File. Updated
+# 2026-08-25 to 28d9aece-0621-458c-949f-0314c8301228, replacing 9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44.
+_PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/28d9aece-0621-458c-949f-0314c8301228/"
 
 # A different lab's (Anshul Kundaje's) namespace, not ours -- same constant as
 # tables/principal_pseudobulk_set.py's _KUNDAJE_ALIAS_PREFIX, duplicated here
@@ -156,7 +160,7 @@ def per_cell_quality_report_aliases(ctx):
 
 
 def plotting_analysis_step_version_alias(ctx):
-    return "/analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/"
+    return "/analysis-step-versions/0077c8e1-f3f7-4e4e-b79e-6e6560820c9b/"
 
 
 def qc_guide_to_atac_fragment_analysis_step_version_alias(ctx):

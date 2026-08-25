@@ -16,8 +16,9 @@ refs.py so there's exactly one place to fill in:
   - derived_from: the per-cluster per-cell QC metric files (content_type
     "per-cell quality report" in the pseudobulks) -- no alias formula given
     yet (refs.per_cell_quality_report_aliases).
-analysis_step_version (refs.plotting_analysis_step_version_alias, resolved
-2026-07-29) is /analysis-step-versions/209d5c8e-8ccb-48c5-8b51-6919b426cbcb/.
+analysis_step_version (refs.plotting_analysis_step_version_alias) is
+/analysis-step-versions/0077c8e1-f3f7-4e4e-b79e-6e6560820c9b/ as of 2026-08-25
+(previously .../209d5c8e-8ccb-48c5-8b51-6919b426cbcb/).
 
 content_type is "barcode to sample mapping" (2026-07-20 feedback, explicitly
 flagged by the user as subject to change -- was "filtered barcode list").
