@@ -24,8 +24,8 @@ resolved 2026-07-29) is jesse-engreitz:rna_matrix_market_tar_archive_file_format
 igvf_manifests/rna_matrix_market_file_format_spec_uploader.tsv, unlike
 Filtered ATAC Fragment Files' already-known /documents/<uuid>/ path.
 
-analysis_step_version (refs.qc_guide_to_rna_matrix_analysis_step_version_alias,
-resolved 2026-07-29) is /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/
+analysis_step_version (refs.qc_guide_to_rna_matrix_analysis_step_version_alias)
+comes from refs._PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION (updated 2026-08-25)
 -- the same analysis step version as ATAC's, per portal manager feedback.
 
 description reads "Matrix Market" (confirmed 2026-07-16) -- the standard

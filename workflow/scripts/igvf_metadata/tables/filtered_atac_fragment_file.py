@@ -18,8 +18,9 @@ primary pseudobulks point at it, not files derived from them):
      references the real filtered_barcode_list table directly.
 
 analysis_step_version reuses the same resolved reference as ATAC Index File
-(refs.qc_guide_to_atac_fragment_analysis_step_version_alias, resolved
-2026-07-29 to /analysis-step-versions/9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44/)
+(refs.qc_guide_to_atac_fragment_analysis_step_version_alias -- see
+refs._PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION for the current value and
+its history; updated 2026-08-25)
 -- confirmed "cluster agnostic," same object either way.
 
 file_format_specifications is a raw portal path (/documents/<uuid>/), not
