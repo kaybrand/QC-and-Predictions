@@ -38,7 +38,19 @@ REPORT_HEADER = [
     "dataset", "cluster", "cell_count", "fragments_total", "umi_count",
     "quality_pass", "exclusion_reason", "has_cell_annotation",
     "igvf_manifest_excluded", "predictions_generated", "reformatted", "status",
+    # Manifest roll-up, from each dataset's manifest_coverage.tsv (written by
+    # igvf_metadata.orchestrator). This is the "which clusters made it into the
+    # manifest, and for the ones that didn't, why" answer -- without opening a
+    # single manifest TSV. manifest_coverage.tsv itself holds the per-(table,
+    # variant) detail behind manifest_gap_reason.
+    "manifest_status", "manifest_rows_expected", "manifest_rows_planned", "manifest_gap_reason",
 ]
+
+# Ordered worst-first: a cluster with several different gaps reports the most
+# actionable one. An invalid payload or a raising gate is a code/data problem;
+# a missing file is an upstream-rule problem; deferred is just ordering.
+_GAP_PRIORITY = ["invalid", "enabled-check-failed", "skipped-missing-file", "deferred"]
+_REAL_ROW_OUTCOMES = frozenset({"planned-post", "planned-patch", "unchanged"})
 
 
 def parse_args():
@@ -50,6 +62,11 @@ def parse_args():
         "NOT cell_annotations_by_dataset_cluster.tsv, which is a manual preview snapshot only",
     )
     p.add_argument("--configs-dir", default=DEFAULT_CONFIG_DIR)
+    p.add_argument(
+        "--manifest-dir", default=None,
+        help="root holding <dataset>/manifest_coverage.tsv (default: {output_dir}/igvf_manifests). "
+        "Absent files mean manifest_status 'not-generated', never a false gap.",
+    )
     p.add_argument("--out", default=None, help="default: {output_dir}/report.tsv")
     return p.parse_args()
 
@@ -98,6 +115,60 @@ def reformatted(output_dir, dataset, cluster):
     return bool(glob.glob(pattern))
 
 
+def load_manifest_coverage(manifest_dir):
+    """{(dataset, cluster): [coverage rows]} across every dataset subfolder's
+    manifest_coverage.tsv. Absent files are simply absent -- a dataset whose
+    manifest has never been generated gets manifest_status "not-generated"
+    rather than a false gap."""
+    by_cluster = {}
+    if not manifest_dir or not os.path.isdir(manifest_dir):
+        return by_cluster
+    for path in sorted(glob.glob(os.path.join(manifest_dir, "*", "manifest_coverage.tsv"))):
+        with open(path) as f:
+            for row in csv.DictReader(f, delimiter="\t"):
+                by_cluster.setdefault((row["dataset"], row["cluster"]), []).append(row)
+    return by_cluster
+
+
+def summarize_manifest(coverage_rows, manifest_excluded, quality_pass, has_annotation):
+    """(manifest_status, expected, planned, gap_reason) for one cluster.
+
+    manifest_status:
+      excluded      -- igvf_manifest_excluded, or failed the quality gate: correctly absent
+      blocked       -- should be in a manifest but can't be (no CellAnnotation, or gaps)
+      not-generated -- manifest generation hasn't run for this dataset yet
+      ready         -- every row this cluster should contribute is present
+    """
+    if manifest_excluded:
+        return "excluded", "", "", "igvf_manifest_excluded"
+    if not quality_pass:
+        return "excluded", "", "", "failed_quality_gate"
+    if not has_annotation:
+        # Deliberately reported even with no coverage file: this is the single most
+        # common reason a cluster is silently missing from a manifest, and it is
+        # knowable without generating one.
+        return "blocked", "", "", "no_cell_annotation"
+    if not coverage_rows:
+        return "not-generated", "", "", ""
+
+    # skipped-family-gated rows are correctly-absent by design (e.g. "genes" under
+    # scATAC), so they are neither expected nor a gap.
+    considered = [r for r in coverage_rows if r["outcome"] != "skipped-family-gated"]
+    planned = [r for r in considered if r["outcome"] in _REAL_ROW_OUTCOMES]
+    gaps = [r for r in considered if r["outcome"] not in _REAL_ROW_OUTCOMES]
+    expected, n_planned = len(considered), len(planned)
+
+    if not gaps:
+        return "ready", expected, n_planned, ""
+
+    outcomes = {r["outcome"] for r in gaps}
+    worst = next((o for o in _GAP_PRIORITY if o in outcomes), sorted(outcomes)[0])
+    example = next(r for r in gaps if r["outcome"] == worst)
+    detail = f"{example['table']}/{example['variant'] or '(default)'}" if example.get("table") else ""
+    suffix = f" (+{len(gaps) - 1} more)" if len(gaps) > 1 else ""
+    return "blocked", expected, n_planned, f"{worst}: {detail}{suffix}"
+
+
 def derive_status(exclusion_reason, quality_pass, has_annotation, has_predictions, is_reformatted):
     # "missing_metrics" (2026-08-17) joins these: a cluster with no
     # filtered_cell_subsample_metrics.tsv is missing a QC-filtering product, same
@@ -126,10 +197,13 @@ def main():
     cluster_stats = load_cluster_stats(args.output_dir)
     datasets = {dataset for dataset, _ in cluster_stats}
     cluster_configs = load_cluster_configs(args.configs_dir, datasets)
+    manifest_dir = args.manifest_dir or os.path.join(args.output_dir, "igvf_manifests")
+    manifest_coverage = load_manifest_coverage(manifest_dir)
     state_conn = igvf_state.connect(args.state_db)
 
     rows = []
     status_counts = {}
+    manifest_counts = {}
     for (dataset, cluster), stats_row in sorted(cluster_stats.items()):
         cluster_cfg = cluster_configs.get((dataset, cluster))
         if cluster_cfg is None:
@@ -147,6 +221,10 @@ def main():
         is_reformatted = reformatted(args.output_dir, dataset, cluster)
         status = derive_status(exclusion_reason, quality_pass, has_annotation, has_predictions, is_reformatted)
         status_counts[status] = status_counts.get(status, 0) + 1
+        manifest_status, m_expected, m_planned, m_gap = summarize_manifest(
+            manifest_coverage.get((dataset, cluster), []), manifest_excluded, quality_pass, has_annotation
+        )
+        manifest_counts[manifest_status] = manifest_counts.get(manifest_status, 0) + 1
 
         rows.append({
             "dataset": dataset,
@@ -161,6 +239,10 @@ def main():
             "predictions_generated": "y" if has_predictions else "n",
             "reformatted": "y" if is_reformatted else "n",
             "status": status,
+            "manifest_status": manifest_status,
+            "manifest_rows_expected": m_expected,
+            "manifest_rows_planned": m_planned,
+            "manifest_gap_reason": m_gap,
         })
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -173,6 +255,9 @@ def main():
 
     print(f"[generate_report] wrote {len(rows)} row(s) to {out_path}", file=sys.stderr)
     for status, count in sorted(status_counts.items(), key=lambda kv: -kv[1]):
+        print(f"[generate_report]   {status}: {count}", file=sys.stderr)
+    print(f"[generate_report] manifest status (coverage from {manifest_dir}):", file=sys.stderr)
+    for status, count in sorted(manifest_counts.items(), key=lambda kv: -kv[1]):
         print(f"[generate_report]   {status}: {count}", file=sys.stderr)
 
 
