@@ -58,6 +58,7 @@ import fcntl
 import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import yaml
@@ -100,7 +101,7 @@ def parse_args():
         "reachable from here -- run manage_igvf_metadata.py --mode upload yourself.",
     )
     p.add_argument("-n", "--dry-run", action="store_true",
-                   help="preview every stage: no portal GET, no state.db write, snakemake -n, no manifest")
+                   help="preview every stage: no portal GET, no derive, snakemake -n, no manifest/audit")
     p.add_argument("--conda-prefix", default=None)
     p.add_argument("--jobs", default="4")
     p.add_argument("--snakemake-arg", action="append", default=[],
@@ -116,6 +117,42 @@ def parse_args():
 def stage_header(n, name, detail=""):
     log("")
     log(f"===== stage {n}: {name} {'-- ' + detail if detail else ''}")
+
+
+@contextmanager
+def state_db_lock(state_db, why):
+    """Exclusive access to state.db for the duration of the block.
+
+    Held by EVERY stage that touches state.db, not just the warm stage: stage 3
+    writes to it too, because orchestrator.run() calls refresh_if_stale (and thus
+    derive_scopes) at the top. Without this, one driver's stage-3 writes could
+    overlap another driver's stage-1 writes, which is exactly what the lock
+    exists to prevent.
+
+    Deliberately NOT held across stage 2 -- that's hours of scE2G compute, and
+    holding it there would serialise every dataset.
+
+    Taken even on a dry run: state.connect() runs CREATE TABLE IF NOT EXISTS plus
+    the column migrations and commits, so opening the DB at all is a write in
+    principle, and the invariant is "one accessor at any instant", not "one
+    writer".
+
+    flock, not SQLite's busy timeout: state.db is a WAL database on Lustre, and
+    WAL's shared-memory index is only supported when every connection is on one
+    host. flock blocks in the kernel (no busy-wait) and is confirmed working on
+    this mount.
+    """
+    lock_path = f"{state_db}.warmlock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        log(f"waiting for state.db lock ({why})")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        log(f"state.db lock acquired ({why})")
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        log(f"state.db lock released ({why})")
 
 
 # ---------------------------------------------------------------------------
@@ -205,19 +242,7 @@ def warm(ctx, dry_run):
     digest = cap.cluster_set_digest(cluster_keys)
 
     ok = True
-    # flock, not SQLite's own busy timeout: several dataset drivers may start at
-    # once, from different compute nodes, and state.db is a WAL database on Lustre
-    # -- whose shared-memory index is only supported on one host. Serialising the
-    # writers keeps it to a single accessor at any instant. flock blocks in the
-    # kernel (no busy-wait) and is confirmed working on this mount.
-    lock_path = f"{state_db}.warmlock"
-    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    try:
-        if not dry_run:
-            log(f"waiting for warm lock {lock_path}")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
-            log("warm lock acquired")
-
+    with state_db_lock(state_db, "warm"):
         conn = state.connect(state_db)
         try:
             last_fetch = state.latest_cell_annotation_fetch(conn)
@@ -265,9 +290,6 @@ def warm(ctx, dry_run):
                 log(f"wrote projection {path} ({len(rows)} annotation row(s))")
         finally:
             conn.close()
-    finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
-        os.close(lock_fd)
 
     # Per-cluster status: the answer to "why isn't this cluster reformatted".
     for dataset in ctx["datasets"]:
@@ -351,7 +373,10 @@ def run_manifest(ctx, args, manifest_dir):
         "--mode", args.manifest_mode,
     ]
     log(f"running manage_igvf_metadata.py --mode {args.manifest_mode} for {len(ready)} cluster(s)")
-    return subprocess.run(cmd, cwd=REPO_ROOT).returncode
+    # orchestrator.run() calls refresh_if_stale at the top, so this subprocess
+    # WRITES state.db. Hold the same lock the warm stage uses.
+    with state_db_lock(ctx["config"]["igvf"]["state_db_path"], "manifest"):
+        return subprocess.run(cmd, cwd=REPO_ROOT).returncode
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +498,7 @@ def main():
         log("RESULT: INCOMPLETE -- see the itemised list above. Exit 1.")
         return 1
     if args.dry_run:
-        log("RESULT: dry run completed. Nothing was fetched, written to state.db, or executed.")
+        log("RESULT: dry run completed. No portal GET, no derive, no rule executed.")
         return 0
     log("RESULT: complete and verified. Exit 0.")
     return 0

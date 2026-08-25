@@ -107,12 +107,46 @@ resources/                # cluster-account-specific operational files, gitignor
 
 ## Running
 
+One command per dataset, through the driver:
+
 ```bash
-mamba activate run_snakemake9
-snakemake -s workflow/Snakefile \
-  --configfile workflow/config/{dataset}_pipeline_config.yaml \
-  --executor slurm --profile slurm.smk9 --use-conda -p
+sbatch resources/run_pipeline.sbatch {dataset}              # default: everything
+sbatch resources/run_pipeline.sbatch {dataset} local_only   # no IGVF Portal contact at all
+sbatch resources/run_pipeline.sbatch {dataset} default -n   # dry run first
 ```
+
+Several datasets at once is safe and needs no ordering between them:
+
+```bash
+for ds in igvf0 igvf1 igvf2; do sbatch resources/run_pipeline.sbatch "$ds"; done
+```
+
+`workflow/scripts/run_pipeline.py` runs five stages in order — preflight, cache
+warm, Snakemake, manifest preview, audit — so producing a dataset's IGVF Portal
+manifests no longer requires three commands in a specific undocumented order.
+It bakes in `--conda-prefix` and `--rerun-triggers mtime` (omitting either has
+caused real multi-hour incidents) and never passes `--omit-from`.
+
+**Exit 0 means complete and verified, and nothing else does.** A portal outage
+degrades the run rather than aborting it: all scE2G work still completes, the
+manifest stages are skipped, and the exit code is non-zero with an itemised
+reason. The driver can never upload — `--manifest-mode` accepts only `preview`
+and `validate`.
+
+### Two modes
+
+- **`default`** — everything, including the live IGVF Portal GET that populates
+  the CellAnnotation cache, portal-format reformatting, and manifest generation.
+- **`local_only`** — everything that needs no Portal contact whatsoever
+  (filtered fragments/RNA matrices, all scE2G predictions/candidates/features,
+  QC report, IGV tracks, EnhancerList and RNA matrix packaging). It never opens
+  `state.db`, never reads the CellAnnotation projection, and requests no
+  reformat target — so Portal availability cannot affect it. Set per-run with
+  `pipeline_mode` in the config or `--config pipeline_mode=local_only`.
+
+Running `snakemake` directly still works, but in `default` mode it aborts before
+the first job if the driver hasn't warmed the cache, rather than silently
+producing zero reformat targets the way it used to.
 
 Always dry-run first (`-n`) and inspect the plan, especially before the
 first run for a new dataset. Synapse uploads and stale-entity deletions
@@ -121,14 +155,28 @@ default to dry-run/disabled (`synapse.dry_run: true`,
 config) — flip these deliberately, one at a time, after reviewing what the
 pipeline reports it would do.
 
+### Knowing what happened
+
+- `{output_dir}/report.tsv` — one row per cluster: quality gate, exclusion
+  reason, CellAnnotation, predictions, reformatting, and the manifest roll-up
+  (`manifest_status`, `manifest_gap_reason`). Answers "which clusters are in,
+  and why isn't this one" without opening a manifest.
+- `{output_dir}/igvf_manifests/{dataset}/manifest_coverage.tsv` — the per-row
+  detail behind that: one row per `(cluster, table, variant)` with its outcome
+  (`planned-post`, `skipped-missing-file:<path>`, `invalid:<msg>`, …).
+- `{output_dir}/igvf_metadata/{dataset}_cell_annotation_status.tsv` — per
+  cluster, whether its CellAnnotation resolved and the exact reason if not.
+
 See `workflow/config/example_pipeline_config.yaml` for the full config
 schema and inline documentation of every field.
 
 ## IGVF Data Portal uploads
 
 `igvf-portal-submission` branch only (not present on the Synapse-only
-`synapse-submission` branch), and not yet wired into the Snakemake pipeline
-above (that's the next step; for now it's run standalone). Ten metadata
+`synapse-submission` branch). Manifest generation is now sequenced by
+`workflow/scripts/run_pipeline.py` (see Running above) rather than being a
+standalone step run by hand; the CLI below is still the way to do a one-off
+pass, and is the ONLY way to upload for real. Ten metadata
 tables are registered so far (Prediction
 Set, Prediction Tabular Files, Principal Pseudobulk Set, Filtered Barcode
 Lists, Filtered ATAC Fragment Files, Filtered Matrix Files, Signal Files,
@@ -165,13 +213,31 @@ system — the two destinations never share state, only the
 `--cluster-keys` eligibility list computed by the same
 `resolve_exclusions.py` both consume.
 
-### Reformat eligibility is gated on the live CellAnnotation cache, not a preview TSV
+### One wholesale GET, then per-dataset derivation
+
+`cell_metadata.fetch_if_stale` issues a single multireport GET covering EVERY
+primary pseudobulk on the portal (24h TTL, tracked by one global row) and saves
+all of it to `state.db`'s raw `cell_metadata_primary_pseudobulks` /
+`cell_metadata_principal_pseudobulks` tables. `cell_metadata.derive_scopes` then
+turns that raw cache into the per-`(dataset, cluster)` `cell_annotations` view,
+using each cluster's own `qc_guide` to pick a winner where contributing
+primaries disagree on Cell Annotation — which is why derivation is per-config
+and can't be prepopulated wholesale.
+
+Those two used to be one function gated on the same TTL, which was a real bug:
+warming for one dataset made the TTL fresh, so every later dataset returned
+early before deriving anything and stayed permanently uncached. Split apart,
+each dataset derives its own rows offline from whatever the raw cache already
+holds, and no dataset depends on another running first.
+
+### Reformat eligibility is gated on the CellAnnotation cache, not a preview TSV
 
 `reformat_predictions`/`reformat_predictions_thresholded`/`reformat_lists`
 (the rules that turn scE2G's own output into portal-format Prediction
 Tabular Files) only run for a `(dataset, cluster)` with a real, cached
 CellAnnotation row already in `state.db` — computed at Snakemake parse time
-as `common.smk`'s `REFORMAT_ELIGIBLE_CLUSTERS`, keyed through
+as `common.smk`'s `REFORMAT_ELIGIBLE_CLUSTERS` (read from the driver-written
+projection described below), keyed through
 `cell_annotations.py`'s `annotation_lookup_key()` (which resolves an
 ATAC-only variant cluster's real CellAnnotation under its base, non-suffixed
 name). **A quality-passing cluster with no cached CellAnnotation yet still
@@ -179,8 +245,18 @@ gets full scE2G predictions/candidates/features** — it's simply not
 reformatted into portal format until `manage_igvf_metadata.py` has warmed
 the cache for it. Core file generation is never blocked by Portal metadata
 availability, and this is intentional: `state.db`'s cache is populated only
-by an explicit, separate `manage_igvf_metadata.py` invocation, never
-triggered automatically by a Snakemake run.
+by the driver's warm stage, never by a Snakemake rule.
+
+**No rule under `workflow/rules/` opens `state.db`.** `common.smk` used to, at
+parse time — and every Slurm worker re-parses the workflow, so several
+concurrent dataset drivers meant worker-node reads on many hosts overlapping
+another driver's writes. `state.db` is on Lustre in WAL mode, whose
+shared-memory index is only supported on a single host. Snakemake now reads
+`{output_dir}/igvf_metadata/{dataset}_cell_annotations.tsv`, a temp projection
+the driver writes immediately beforehand and deletes afterwards, carrying the
+portal fetch timestamp and a digest of the cluster set — both enforced on read,
+so a stale or foreign file raises instead of quietly reporting nothing
+annotated. See `workflow/scripts/cell_annotation_projection.py`.
 
 ### Portal-facing packaging generated directly by this pipeline
 
