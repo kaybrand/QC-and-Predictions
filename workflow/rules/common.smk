@@ -29,7 +29,12 @@ import yaml
 WDIR = os.path.dirname(workflow.basedir)
 
 sys.path.insert(0, os.path.join(workflow.basedir, "scripts"))
-from resolve_exclusions import resolve_exclusions, write_cluster_stats_table  # noqa: E402
+from resolve_exclusions import (  # noqa: E402
+    resolve_exclusions,
+    write_cluster_stats_table,
+    manifest_eligible_clusters,
+    predictions_on_everything,
+)
 from write_scE2G_config import (  # noqa: E402
     write_cell_clusters_table,
     write_cluster_metadata_table,
@@ -135,11 +140,25 @@ INCLUDED_CLUSTERS, UPLOAD_ELIGIBLE_CLUSTERS, EXCLUDED_CLUSTERS, CLUSTER_STATS = 
 
 if EXCLUDED_CLUSTERS:
     print(f"[QC-and-Predictions] Excluding clusters this run: {sorted(EXCLUDED_CLUSTERS)}")
-if not config.get("exclusion", {}).get("process_excluded_no_upload", False):
+if not predictions_on_everything(config.get("exclusion", {})):
     print(f"[QC-and-Predictions] Processing clusters: {sorted(INCLUDED_CLUSTERS)}")
 else:
     print(f"[QC-and-Predictions] Processing (incl. excluded, no-upload) clusters: {sorted(INCLUDED_CLUSTERS)}")
     print(f"[QC-and-Predictions] Upload-eligible clusters: {sorted(UPLOAD_ELIGIBLE_CLUSTERS)}")
+
+# Upload-eligible MINUS any cluster flagged `igvf_manifest_excluded: true` (the 4
+# ATAC-only variant clusters). Enforced here and in the driver that builds
+# manage_igvf_metadata.py's --cluster-keys, from the one shared helper -- until
+# now the flag was written into configs and reported by generate_report.py but
+# never actually kept anything out of a manifest. Deliberately NOT folded into
+# REFORMAT_ELIGIBLE_CLUSTERS below: those clusters are still reformatted, just
+# never submitted.
+MANIFEST_ELIGIBLE_CLUSTERS = manifest_eligible_clusters(config, UPLOAD_ELIGIBLE_CLUSTERS)
+if MANIFEST_ELIGIBLE_CLUSTERS != UPLOAD_ELIGIBLE_CLUSTERS:
+    print(
+        "[QC-and-Predictions] Excluded from IGVF manifests by igvf_manifest_excluded: "
+        f"{sorted(UPLOAD_ELIGIBLE_CLUSTERS - MANIFEST_ELIGIBLE_CLUSTERS)}"
+    )
 
 # Cluster-stats persistence -- CLUSTER_STATS above is otherwise computed and
 # discarded every parse. Write it out at PARSE time (including on `-n` dry
