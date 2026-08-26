@@ -100,7 +100,7 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
 
 
 def compute_cluster_stats(
-    plots_dir, datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna,
+    datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna,
     prefiltered=False,
 ):
     """
@@ -135,8 +135,12 @@ def compute_cluster_stats(
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
     """
-    cluster_plots_dir = os.path.join(plots_dir, dataset, cluster)
-    metrics_path = os.path.join(cluster_plots_dir, "filtered_cell_subsample_metrics.tsv")
+    # The metrics file plot_per_cell_qc.R writes always sits alongside the QC
+    # guide it was derived from -- so read it from qc_guide_path's own directory
+    # rather than reconstructing a path from data_dir. This lets a cluster's
+    # qc_guide be overridden (e.g. --qc-guide-dir) without a second, independent
+    # path needing to agree with it.
+    metrics_path = os.path.join(os.path.dirname(qc_guide_path), "filtered_cell_subsample_metrics.tsv")
 
     if not prefiltered:
         if not os.path.exists(metrics_path):
@@ -202,7 +206,6 @@ def resolve_exclusions(config, data_dir):
     plots/datatables when the code and the data happened to live in the same
     place.
     """
-    plots_dir = os.path.join(data_dir, "plots")
     # Only read for clusters marked `prefiltered: true`. Overridable via
     # config["qc_datatables_dir"] so a tree rebuilt by build_qc_datatables.py can
     # be used instead of the legacy one under the read-only data_dir; defaults to
@@ -226,7 +229,7 @@ def resolve_exclusions(config, data_dir):
         all_clusters.add(key)
         has_rna = cluster_cfg["models"] != ["scATAC_powerlaw_v3"]
         stats, stat_reason = compute_cluster_stats(
-            plots_dir, datatables_dir, dataset, cluster,
+            datatables_dir, dataset, cluster,
             cluster_cfg["pseudobulk_annotation"], cluster_cfg["qc_guide"], has_rna,
             prefiltered=bool(cluster_cfg.get("prefiltered", False)),
         )
