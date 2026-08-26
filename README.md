@@ -1,8 +1,9 @@
 # QC-and-Predictions
 
 End-to-end Snakemake pipeline for the IGVF E2G Pillar Project: takes one or
-more QC-filtered clusters from pseudobulk to Synapse-hosted scE2G data
-products.
+more QC-filtered clusters from pseudobulk to shareable scE2G data products.
+On this branch (`igvf-portal-submission`) the primary destination is the IGVF
+Data Portal; the Synapse path runs alongside it, not instead of it.
 
 ## Where this fits
 
@@ -72,7 +73,6 @@ both consume. See [IGVF Data Portal uploads](#igvf-data-portal-uploads) below.
 ## Layout
 
 ```
-Snakefile              # legacy bulk ATAC/RNA filtering pipeline (kept working, superseded by workflow/ for new runs)
 workflow/
   Snakefile             # main entry point for the end-to-end pipeline
   rules/                # Snakemake rule files
@@ -176,14 +176,17 @@ schema and inline documentation of every field.
 `synapse-submission` branch). Manifest generation is now sequenced by
 `workflow/scripts/run_pipeline.py` (see Running above) rather than being a
 standalone step run by hand; the CLI below is still the way to do a one-off
-pass, and is the ONLY way to upload for real. Ten metadata
-tables are registered so far (Prediction
-Set, Prediction Tabular Files, Principal Pseudobulk Set, Filtered Barcode
-Lists, Filtered ATAC Fragment Files, Filtered Matrix Files, Signal Files,
-ATAC Index File, BEDPE Index File, Documents) — several still block on
-pieces marked TBD in the code (a couple of alias formulas and one live
-portal lookup), which read loudly rather than silently uploading
-incomplete metadata.
+pass, and is the ONLY way to upload for real. Eleven metadata tables are
+registered (Prediction Set, Prediction Tabular Files, Principal Pseudobulk
+Set, Filtered Barcode Lists, Filtered ATAC Fragment Files, Filtered Matrix
+Files, Signal Files, ATAC Index File, Elements BED Index File, BEDPE Index
+File, Documents).
+
+Eleven tables, but **fifteen** manifest files per fully-covered dataset: a
+table can register several *variants*, each of which gets its own file.
+Prediction Tabular Files alone has five (`elements_bed`, `genes`, `full`,
+`thresholded`, `bedpe`). Don't read "11 tables" and "15 files" as a
+discrepancy.
 
 Real writes always go through `igvf_utils`' own `iu_register.py`, never a
 hand-rolled API call, and default to a dry, reviewable mode:
@@ -232,9 +235,11 @@ holds, and no dataset depends on another running first.
 
 ### Reformat eligibility is gated on the CellAnnotation cache, not a preview TSV
 
-`reformat_predictions`/`reformat_predictions_thresholded`/`reformat_lists`
-(the rules that turn scE2G's own output into portal-format Prediction
-Tabular Files) only run for a `(dataset, cluster)` with a real, cached
+`reformat_predictions`/`reformat_predictions_thresholded`/`reformat_element_list`/
+`reformat_gene_list` (the rules that turn scE2G's own output into portal-format
+Prediction Tabular Files; the single `{meta}`-wildcarded `reformat_lists` rule was
+split into the element/gene pair on 2026-08-19, see `rules/reformat.smk`)
+only run for a `(dataset, cluster)` with a real, cached
 CellAnnotation row already in `state.db` — computed at Snakemake parse time
 as `common.smk`'s `REFORMAT_ELIGIBLE_CLUSTERS` (read from the driver-written
 snapshot described below), keyed through
@@ -264,8 +269,9 @@ A few files exist purely so `manage_igvf_metadata.py`'s uploader tables have
 something to find on disk — none of these require Portal contact to
 produce:
 
-- `Neighborhoods/EnhancerList.bed.gz` + `.tbi` (`rules/enhancer_list_packaging.smk`) —
-  bgzip/tabix of scE2G's own (already coordinate-sorted) `EnhancerList.bed`.
+- `Neighborhoods/EnhancerList.bed.gz` + `.tbi` (`rules/reformat.smk`, wired up in
+  `rules/common.smk`) — bgzip/tabix of scE2G's own (already coordinate-sorted)
+  `EnhancerList.bed`.
 - Thresholded prediction `.bedpe.gz` + `.tbi` (`rules/qc_stats.smk`'s
   `bgzip_index_bedpe`) — Synapse submission uses scE2G's raw `.bedpe`
   as-is; the Portal's BEDPE Index File needs the bgzipped/indexed form.
