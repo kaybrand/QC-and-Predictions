@@ -125,7 +125,12 @@ rule aggregate_qc_stats:
         this_run_stats=lambda wildcards: per_cluster_stats_files(wildcards.dataset),
     params:
         dataset_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}"),
-        plots_dir=os.path.join(config["data_dir"], "plots", "{dataset}"),
+        # Derived from an actual cluster's own qc_guide (not config["data_dir"] + "plots")
+        # so a --qc-guide-dir override at config-generation time is honored here too --
+        # every cluster in a dataset shares the same plots tree by construction.
+        plots_dir=lambda wildcards: os.path.dirname(os.path.dirname(
+            next(iter(config["clusters"][wildcards.dataset].values()))["qc_guide"]
+        )),
     output:
         all_stats=os.path.join(QC_PLOTS_DIR, "all_qc_stats.tsv"),
     conda:
