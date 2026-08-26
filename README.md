@@ -121,6 +121,19 @@ Several datasets at once is safe and needs no ordering between them:
 for ds in igvf0 igvf1 igvf2; do sbatch resources/run_pipeline.sbatch "$ds"; done
 ```
 
+What makes that safe is an `flock` on `{state_db}.warmlock`, held by every
+stage that touches `state.db` — the warm stage *and* stage 3, because
+`orchestrator.run()` calls `refresh_if_stale` and so writes too. It is
+deliberately **not** held across stage 2, which is hours of scE2G compute and
+would serialise every dataset. Verified 2026-08-25: eight drivers launched at
+once across four hosts, three of them requesting the lock in the same second
+and being granted it in strict sequence (3 s and 4 s waits, each acquire
+landing exactly on the previous release), `PRAGMA integrity_check` clean
+afterwards. Cross-host locking works because Oak is mounted with `flock`, not
+`localflock` — worth re-checking with `mount | grep oak` if `state.db` ever
+moves to another filesystem, since `localflock` would make locks node-local
+and let two hosts write WAL concurrently while both logged success.
+
 `workflow/scripts/run_pipeline.py` runs five stages in order — preflight, cache
 warm, Snakemake, manifest preview, audit — so producing a dataset's IGVF Portal
 manifests no longer requires three commands in a specific undocumented order.
@@ -132,6 +145,33 @@ degrades the run rather than aborting it: all scE2G work still completes, the
 manifest stages are skipped, and the exit code is non-zero with an itemised
 reason. The driver can never upload — `--manifest-mode` accepts only `preview`
 and `validate`.
+
+| Exit | Meaning |
+|------|---------|
+| `0` | every manifest-eligible cluster resolved and every expected row is present |
+| `1` | output was produced but something is incomplete — portal unreachable, a cluster's annotation unresolved, a manifest gap. Always itemised as `DEGRADED:` / `PROBLEM:` lines |
+| `2` | preflight/config error — nothing ran |
+
+Exit 1 is routine and not necessarily a failure to chase: a cluster that is
+manifest-eligible but has no resolvable CellAnnotation produces one `PROBLEM:`
+line and exit 1 while every other cluster in the dataset completes normally.
+Read the itemised list before concluding the run was wasted.
+
+### Environments
+
+Two conda envs, on purpose, and you need both:
+
+- **`run_snakemake9`** — has `snakemake`, `conda`, `mamba`. No `igvf_utils`.
+- **`igvf_utils_env`** — has `igvf_utils` (required for the Portal GET) and
+  SQLite 3.50. No `snakemake`.
+
+`resources/run_pipeline.sbatch` activates `run_snakemake9` (which puts
+`snakemake` on `PATH` for `--use-conda`) and then runs the driver under
+`igvf_utils_env`'s interpreter; the driver shells out to `snakemake` from
+`PATH`, so both halves get the interpreter they need. Running any of this
+Python by hand means picking the right interpreter yourself — in particular
+`state.py`'s UPSERTs need SQLite ≥ 3.24 and the login node's system Python
+ships 3.7.17, which fails in a way that does not obviously point at SQLite.
 
 ### Two modes
 
@@ -147,6 +187,20 @@ and `validate`.
 Running `snakemake` directly still works, but in `default` mode it aborts before
 the first job if the driver hasn't warmed the cache, rather than silently
 producing zero reformat targets the way it used to.
+
+Before committing real compute to a dataset you haven't run, you can answer
+"how many of its clusters will even resolve?" offline, with zero network
+contact and against a *copy* of `state.db`, so a diagnostic never mutates the
+shared ledger:
+
+```bash
+sbatch resources/predict_fanout_scopes.sbatch igvf1 igvf2 igvf3   # wraps verify_derive_scopes.py
+```
+
+It reports `N/M scope(s) resolved` per dataset plus the exact reason for each
+one that didn't (`no_matching_primary_alias: ...`, `unreadable_qc_guide: ...`).
+The numbers are a lower bound — a fresh Portal fetch can only add rows — and
+in practice they have matched the real run's derive counts exactly.
 
 Always dry-run first (`-n`) and inspect the plan, especially before the
 first run for a new dataset. Synapse uploads and stale-entity deletions
@@ -170,6 +224,52 @@ pipeline reports it would do.
 See `workflow/config/example_pipeline_config.yaml` for the full config
 schema and inline documentation of every field.
 
+### Troubleshooting: a run wants to recompute Kendall for everything
+
+If a dry run plans `generate_atac_matrix` → `compute_kendall` → `arc_e2g` for
+clusters whose outputs already exist and are current, check the *directory*
+mtime before letting it run. Measured 2026-08-25: **97 of 115 clusters** across
+nine datasets were stale this way, for byte-identical output.
+
+The cause is upstream and is not a staleness signal at all. scE2G's
+`generate_atac_matrix` declares `cell_barcodes_path = RESULTS_DIR` — the whole
+`{output_dir}/uniformly_processed/{dataset}` directory — as an input whenever
+`RNA_matrix_filtered: True` (scE2G's default). `generate_atac_matrix.R` then
+guards it with `if (file_test("-f", cell_bc_path))`, which is false for a
+directory, so **the input is never read and its mtime carries no correctness
+information.** But a directory's mtime bumps whenever an entry is added or
+removed in it — and `rules/qc_stats.smk` creates
+`{dataset}/qc_plots/` there. Under `--rerun-triggers mtime` that invalidates
+every cluster's `generate_atac_matrix` and cascades.
+
+It presents as intermittent because it is pure ordering: the bump only matters
+if it lands *after* the outputs were written. Writing files *inside* an
+existing subdirectory never propagates to the parent.
+
+Diagnose and fix:
+
+```bash
+cd {output_dir}/uniformly_processed
+stat -c %y igvf4                                    # directory mtime
+find igvf4 -mindepth 3 -maxdepth 3 -name atac_matrix.rds -printf '%TY-%Tm-%Td %TH:%TM\n' | sort | head -1
+# stale if the directory is NEWER than the oldest atac_matrix.rds:
+oldest=$(find igvf4 -mindepth 3 -maxdepth 3 -name atac_matrix.rds -printf '%T@\n' | sort -n | head -1 | cut -d. -f1)
+touch -h -d "@$((oldest-60))" igvf4
+```
+
+Reset the *directory* mtime, not the outputs — ten metadata writes rather than
+rewriting mtimes on ~97 large files, which is what `snakemake --touch` would do
+and which can mask something genuinely stale. Confirm with a dry run: the job
+count should drop to just the genuinely-missing work. Note the reset is not
+permanent — it recurs whenever a new top-level entry appears under a dataset
+directory, and it has been observed to revert. **Verify with a dry run
+immediately before each real run rather than assuming a previous fix still
+holds.** `qc_plots/` cannot simply be moved elsewhere: scE2G's still-imported
+`hover_plots` rule reads that exact path (see `rules/qc_stats.smk`'s docstring).
+
+The durable fix is one word upstream — `return ancient(RESULTS_DIR)` — and
+belongs in a PR to `EngreitzLab/scE2G`, not here.
+
 ## IGVF Data Portal uploads
 
 `igvf-portal-submission` branch only (not present on the Synapse-only
@@ -186,7 +286,7 @@ Eleven tables, but **fifteen** manifest files per fully-covered dataset: a
 table can register several *variants*, each of which gets its own file.
 Prediction Tabular Files alone has five (`elements_bed`, `genes`, `full`,
 `thresholded`, `bedpe`). Don't read "11 tables" and "15 files" as a
-discrepancy.
+discrepancy — see [Reading the manifest directory](#reading-the-manifest-directory).
 
 Real writes always go through `igvf_utils`' own `iu_register.py`, never a
 hand-rolled API call, and default to a dry, reviewable mode:
@@ -215,6 +315,50 @@ in its own SQLite ledger, entirely separate from the Synapse manifest
 system — the two destinations never share state, only the
 `--cluster-keys` eligibility list computed by the same
 `resolve_exclusions.py` both consume.
+
+### Reading the manifest directory
+
+`{output_dir}/igvf_manifests/{dataset}/` holds two different kinds of file, and
+mistaking one for the other is the easiest way to misread a run.
+
+**`round{N}_{table}_{variant}_{post,patch}.tsv` — the submission files.**
+Ephemeral, and rewritten every run. The round number encodes dependency order:
+**sorting by filename *is* the upload order**, because a later round's payloads
+reference aliases earlier rounds create. A fully-covered dataset produces
+fifteen of these.
+
+- `_post` — no object exists at this alias; create it.
+- `_patch` — it exists and the payload hash *changed*; update it.
+- A table can legitimately have **neither**. If a row's alias is already live
+  and its payload hash is unchanged, the outcome is `unchanged` and nothing is
+  written, because a patch would ask the Portal to overwrite fields with the
+  values they already hold. **Fourteen round files instead of fifteen is not
+  automatically a failure** — check `manifest_coverage.tsv` for `unchanged`
+  before treating it as a gap.
+
+Writing a PATCH retires a stale sibling POST; writing a POST does **not** retire
+a PATCH — it warns and keeps both. That asymmetry is deliberate. `plan_table`'s
+alias lookup is the Elasticsearch-backed read, which can lag a write and
+falsely report "not found", so the POST-while-PATCH-exists direction can be
+fabricated spuriously and must never silently delete real work.
+
+**`{object_type}.tsv` — the durable accumulator.** Named for the *Portal's*
+object type, not our table name, which is why nine `QC_documents` rows land in
+`document.tsv`. Several of our tables share one object type (`filtered_barcode_list`,
+`filtered_atac_fragment_file` and every `prediction_tabular_files` variant are all
+`tabular_file`), and grouping this way is what makes a future bulk field edit
+across a whole object type one edit-and-resubmit against one file, matching
+`iu_register.py`'s one-profile-per-invocation constraint. It carries `record_id`s,
+never shrinks, and is **never handed to the registrar** — it is a reference, not
+a submission.
+
+One consequence worth knowing before you go hunting: the `unchanged` branch
+short-circuits on the local ledger **before** the live alias lookup. So a row
+can be skipped with zero Portal contact on the strength of `state.db` alone. If
+objects were deleted Portal-side, the ledger will not know. Confirm against the
+Portal with a read-only `get_by_alias` before concluding the ledger is stale —
+and equally, before "fixing" it, since resetting a ledger row whose object is
+genuinely still live just generates a spurious PATCH of identical values.
 
 ### One wholesale GET, then per-dataset derivation
 
