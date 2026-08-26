@@ -53,7 +53,11 @@ def build_alias(ctx, variant_name):
 
 
 def _attachment_path(ctx):
-    return os.path.join(ctx.data_dir, "plots", ctx.dataset, ctx.cluster, "qc_thresholds.tsv")
+    # Sibling of this cluster's own qc_guide file, not a path rebuilt from
+    # ctx.data_dir -- so a --qc-guide-dir override at config-generation time
+    # (generate_pipeline_configs.py) is honored here too, same as
+    # resolve_exclusions.py's metrics-file lookup.
+    return os.path.join(os.path.dirname(ctx.cluster_cfg["qc_guide"]), "qc_thresholds.tsv")
 
 
 def _required_paths(ctx):
