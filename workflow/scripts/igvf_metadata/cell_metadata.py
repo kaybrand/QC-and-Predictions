@@ -215,6 +215,35 @@ def _local_subsamples(cluster_keys, cluster_configs):
     return by_scope, unreadable
 
 
+def _merge_sources(cluster_cfg, cluster):
+    """The annotation name(s) a cluster's primary pseudobulks are aliased under,
+    most clusters having exactly one: their own name.
+
+    `pseudobulk_annotation` is this repo's established way of saying "this cluster
+    is built from these source annotations", comma-separated when merged (igvf18's
+    mcf7 = "mcf7_1,mcf7_2").
+
+    ONLY the comma case is honoured here, and that restriction is load-bearing.
+    `pseudobulk_annotation` is NOT always the cluster name for unmerged clusters --
+    the ATAC-only variants are exactly the counterexample (igvf18's
+    hudep_d7_ATAC_only carries `pseudobulk_annotation: hudep_d7`). Honouring it for
+    them would let their `{dataset}-hudep_d7-{subsample}` primaries suddenly match,
+    flipping three long-unresolved clusters to resolved -- which makes them
+    reformat-eligible and generates scATAC prediction files that are deliberately
+    not being shared this round. Those clusters have their own override for
+    annotation lookup (`cell_annotation_key`, see cell_annotations.py); alias
+    matching is not the place to reinterpret them.
+
+    So: merged -> the constituent names; everything else -> [cluster], byte-identical
+    to the behaviour before merged-cluster support existed.
+    """
+    raw = str(cluster_cfg.get("pseudobulk_annotation") or "")
+    if "," not in raw:
+        return [cluster]
+    names = [part.strip() for part in raw.split(",") if part.strip()]
+    return names or [cluster]
+
+
 def _alias_suffix(alias):
     """The part after the first ":" -- "{dataset}-{cluster}-{subsample}" for
     the ~500 primaries that follow that convention, whatever it is for
@@ -367,14 +396,41 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
         # encodes cluster identity, so match candidate suffixes built from OUR OWN known
         # (dataset, cluster, subsample) triples against it, rather than parsing the alias's
         # ambiguous hyphen-separated segments blind.
-        candidate_suffixes = {f"{dataset}-{cluster}-{s}": s for s in local_subsamples}
-        matched_suffixes |= set(candidate_suffixes)
-        missing_locally = [s for suffix, s in candidate_suffixes.items() if suffix not in primary_by_alias_suffix]
+        #
+        # A MERGED cluster has no primary of its own. igvf18's mcf7 is
+        # `pseudobulk_annotation: mcf7_1,mcf7_2` and the portal only ever saw
+        # `igvf18-mcf7_1-{subsample}` / `igvf18-mcf7_2-{subsample}` -- nothing is
+        # aliased `igvf18-mcf7-...`, so matching on the cluster name alone reports
+        # every subsample as no_matching_primary_alias. Match on the CONSTITUENT
+        # annotation names instead, and accept a subsample that resolves under any
+        # one of them (mcf7_1 carries all 7; mcf7_2 only 4).
+        #
+        # Gated on the cluster actually being merged (see _merge_sources) so that
+        # non-merged clusters keep the exact previous code path. That gate is not
+        # mere caution: `pseudobulk_annotation` is NOT reliably equal to `cluster`
+        # for unmerged clusters, so matching on it unconditionally would silently
+        # resolve the ATAC-only variants too. See _merge_sources' docstring.
+        source_names = _merge_sources(cluster_configs[(dataset, cluster)], cluster)
+        candidate_suffixes = {}   # suffix -> subsample, only for suffixes that exist
+        rows_by_subsample = {}    # subsample -> its matched row(s), in source_names order
+        missing_locally = []
+        for s in local_subsamples:
+            hits = [f"{dataset}-{name}-{s}" for name in source_names
+                    if f"{dataset}-{name}-{s}" in primary_by_alias_suffix]
+            if hits:
+                candidate_suffixes.update({suffix: s for suffix in hits})
+                rows_by_subsample[s] = [primary_by_alias_suffix[suffix] for suffix in hits]
+            else:
+                missing_locally.append(s)
+            # Report every suffix we CONSIDERED as matched, not just the ones that
+            # hit, so the trailing unmatched-primaries audit isn't polluted by the
+            # constituent names we deliberately probed.
+            matched_suffixes |= {f"{dataset}-{name}-{s}" for name in source_names}
         if missing_locally:
             log(
                 f"{dataset}/{cluster}: local subsample(s) {sorted(missing_locally)} have no corresponding "
-                f"primary pseudobulk alias matching \"{{lab}}:{dataset}-{{cluster}}-{{subsample}}\" on the "
-                f"portal -- skipping this scope's cache until resolved (expected for primaries uploaded "
+                f"primary pseudobulk alias matching \"{{lab}}:{dataset}-{{{'|'.join(source_names)}}}-{{subsample}}\" "
+                f"on the portal -- skipping this scope's cache until resolved (expected for primaries uploaded "
                 f"under a different alias convention -- see module docstring)"
             )
             statuses.append(
@@ -420,16 +476,40 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
         # contributing, see _local_subsamples) rather than requiring unanimous
         # agreement across every contributing subsample.
         annotation_qualifier_pairs = {(r["cell_annotation"], r["cell_qualifier"]) for r in scope_rows}
-        winning_subsample = local_subsamples[0]
-        winning_row = primary_by_alias_suffix[f"{dataset}-{cluster}-{winning_subsample}"]
-        if len(annotation_qualifier_pairs) != 1:
+        if len(source_names) > 1:
+            # MERGED cluster: the per-constituent qualifier describes the CONSTITUENT,
+            # not the merge, so it cannot be carried onto the merged object. igvf18's
+            # mcf7 merges a MED13L+ half and a VMP1+ half; the most-contributing-
+            # subsample tie-break below would stamp the whole thing "MED13L+", which is
+            # affirmatively wrong for the half that isn't. Both halves agree on the
+            # cell type itself (the term_triples check above already proved that), so
+            # the merge's honest annotation is the bare term_name with NO qualifier --
+            # which is also exactly the shape its unqualified siblings take
+            # (igvf18/hct116 -> 'HCT116', qualifier NULL).
+            cell_annotation = term_name
+            cell_qualifier = None
             log(
-                f"{dataset}/{cluster}: {len(annotation_qualifier_pairs)} distinct Cell Annotation/Cell "
-                f"Qualifier pairs across its primary pseudobulks -- resolved using the most-contributing "
-                f"subsample ({winning_subsample})"
+                f"{dataset}/{cluster}: merged cluster over {source_names} with "
+                f"{len(annotation_qualifier_pairs)} distinct Cell Annotation/Cell Qualifier pair(s) -- "
+                f"using the shared cell type {term_name!r} and dropping the per-constituent qualifier "
+                f"({sorted({r['cell_qualifier'] for r in scope_rows if r['cell_qualifier']})})"
             )
-        cell_annotation = winning_row["cell_annotation"]
-        cell_qualifier = winning_row["cell_qualifier"]
+        else:
+            winning_subsample = local_subsamples[0]
+            # Indexed off the rows we actually matched, never re-derived from the
+            # cluster name: those two agree only while `pseudobulk_annotation` ==
+            # `cluster`, which the ATAC-only variants disprove, and reconstructing
+            # the key here raised KeyError mid-loop and took down every remaining
+            # scope's derivation with it.
+            winning_row = rows_by_subsample[winning_subsample][0]
+            if len(annotation_qualifier_pairs) != 1:
+                log(
+                    f"{dataset}/{cluster}: {len(annotation_qualifier_pairs)} distinct Cell Annotation/Cell "
+                    f"Qualifier pairs across its primary pseudobulks -- resolved using the most-contributing "
+                    f"subsample ({winning_subsample})"
+                )
+            cell_annotation = winning_row["cell_annotation"]
+            cell_qualifier = winning_row["cell_qualifier"]
 
         all_primary_released = all(r["status"] == "released" for r in scope_rows)
         principal_alias = principal_by_annotation.get(cell_annotation)
