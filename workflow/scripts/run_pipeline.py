@@ -84,7 +84,14 @@ PLAN_NAME = "{dataset}_pipeline_plan.tsv"
 
 
 def log(msg):
-    print(f"[run_pipeline] {msg}", file=sys.stderr, flush=True)
+    # Timestamped because the lock lines ("waiting for"/"acquired"/"released")
+    # are the only evidence that concurrent drivers serialised on the flock --
+    # without a clock you cannot tell a wait from a walk-in.
+    # Milliseconds, not whole seconds: the 2026-08-25 V6 run showed that at
+    # 1s resolution a cross-host acquire/release pair is merely CONSISTENT with
+    # serialisation rather than proof of it (see resources/V6_V7_FINDINGS.md).
+    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S.%f")[:-3]
+    print(f"[run_pipeline {stamp}] {msg}", file=sys.stderr, flush=True)
 
 
 def parse_args():
