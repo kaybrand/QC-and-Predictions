@@ -124,17 +124,30 @@ def list_owned_entities(syn, parent_id, cluster_keys, nested, model_tokens):
     return owned
 
 
-def _row_belongs_to_cluster_keys(path, cluster_keys):
-    """True if `path` (a manifest row's "path" column) matches one of this
-    invocation's own (dataset, cluster) pairs, using the same heuristic as
-    the should_exist_files matching below (nested "/{d}/{c}/" segment, or
-    flat "{d}_{c}_" filename prefix)."""
+def _find_cluster_key(path, cluster_keys):
+    """Best (dataset, cluster) match for `path` among cluster_keys: nested
+    "/{d}/{c}/" segment, or flat "{d}_{c}_" filename prefix. Prefers the
+    LONGEST matching cluster name, since a sibling cluster whose name is a
+    prefix of another in the same dataset (e.g. "h7" and "h7_mesoderm") would
+    otherwise match ambiguously -- both checks are substring/prefix tests
+    with no trailing boundary once the shorter name is also a valid prefix of
+    the longer one's own name."""
     normalized = path.replace(os.sep, "/")
     basename = os.path.basename(path)
-    for dataset, cluster in cluster_keys:
-        if f"/{dataset}/{cluster}/" in normalized or basename.startswith(f"{dataset}_{cluster}_"):
-            return True
-    return False
+    candidates = [
+        (dataset, cluster)
+        for dataset, cluster in cluster_keys
+        if f"/{dataset}/{cluster}/" in normalized or basename.startswith(f"{dataset}_{cluster}_")
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda dc: len(dc[1]))
+
+
+def _row_belongs_to_cluster_keys(path, cluster_keys):
+    """True if `path` (a manifest row's "path" column) matches one of this
+    invocation's own (dataset, cluster) pairs."""
+    return _find_cluster_key(path, cluster_keys) is not None
 
 
 def load_preserved_rows(manifest_path, cluster_keys):
@@ -203,10 +216,7 @@ def main():
 
     should_exist = {}  # (dataset, cluster, name) -> local_path
     for local_path in args.should_exist_files:
-        match = next(
-            ((d, c) for d, c in cluster_keys if f"/{d}/{c}/" in local_path.replace(os.sep, "/") or os.path.basename(local_path).startswith(f"{d}_{c}_")),
-            None,
-        )
+        match = _find_cluster_key(local_path, cluster_keys)
         if match is None:
             print(f"[manage_synapse_manifest] WARNING: could not determine (dataset, cluster) for {local_path}, skipping", file=sys.stderr)
             continue
