@@ -28,12 +28,60 @@ from igvf_metadata.context import IgvfConfig
 from pipeline_paths import resolve_repo_relative, repo_root_from_script
 
 
-def parse_cluster_keys(raw):
+def parse_cluster_keys(raw, clusters=None, strict=False, flag="--cluster-keys"):
+    """Parse comma-separated scope tokens into a set of (dataset, cluster).
+
+    Two accepted token forms:
+      "dataset/cluster"  -- one specific cluster
+      "dataset"          -- EVERY cluster that dataset has in the config, which
+                            needs `clusters` (the config's "clusters" mapping)
+
+    The bare-dataset form exists because a plain `--cluster-keys igvf4` used to
+    partition() into ("igvf4", "") and then die on `config["clusters"]["igvf4"][""]`
+    with a bare `KeyError: ''` -- which says nothing about the real mistake. It is
+    also the obvious way to ask for a whole dataset, so it now means that.
+
+    strict=True (for --cluster-keys, whose keys must index the config) validates
+    every token and exits with an actionable message listing what IS available.
+    Left lenient for --excluded-cluster-keys, which is only recorded in the
+    ledger and never used to look anything up.
+    """
+    clusters = clusters or {}
     keys = set()
     for token in raw.split(","):
+        token = token.strip()
         if not token:
             continue
-        dataset, _, cluster = token.partition("/")
+        dataset, sep, cluster = token.partition("/")
+
+        if not sep or not cluster:
+            # Bare dataset -> expand to all of its clusters.
+            known = clusters.get(dataset)
+            if known:
+                keys.update((dataset, c) for c in known)
+                continue
+            if strict:
+                sys.exit(
+                    f"{flag}: {token!r} names no dataset in this config.\n"
+                    f"  datasets available: {', '.join(sorted(clusters)) or '(none)'}\n"
+                    f"  use 'dataset/cluster' for one cluster, or 'dataset' for all of them."
+                )
+            keys.add((dataset, cluster))
+            continue
+
+        if strict:
+            if dataset not in clusters:
+                sys.exit(
+                    f"{flag}: unknown dataset {dataset!r} in token {token!r}.\n"
+                    f"  datasets available: {', '.join(sorted(clusters)) or '(none)'}"
+                )
+            if cluster not in clusters[dataset]:
+                available = sorted(clusters[dataset])
+                shown = ", ".join(available[:12]) + (f", ... (+{len(available)-12} more)" if len(available) > 12 else "")
+                sys.exit(
+                    f"{flag}: unknown cluster {cluster!r} in dataset {dataset!r}.\n"
+                    f"  {len(available)} cluster(s) available: {shown}"
+                )
         keys.add((dataset, cluster))
     return keys
 
@@ -42,7 +90,10 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--pipeline-config", required=True, help="path to a *_pipeline_config.yaml")
     p.add_argument(
-        "--cluster-keys", required=True, help='comma-separated "dataset/cluster" tokens, upload-eligible this run'
+        "--cluster-keys", required=True,
+        help='comma-separated scope tokens, upload-eligible this run. "dataset/cluster" for one '
+             'cluster; a bare "dataset" means every cluster that dataset has in the config. '
+             'e.g. "igvf4/wtc11_macrophage_m0" or "igvf4"',
     )
     p.add_argument(
         "--excluded-cluster-keys",
@@ -77,10 +128,24 @@ def main():
         config = yaml.safe_load(f)
 
     igvf_cfg = IgvfConfig.from_dict(config.get("igvf", {}))
-    cluster_keys = parse_cluster_keys(args.cluster_keys)
-    excluded = parse_cluster_keys(args.excluded_cluster_keys)
+    all_clusters = config.get("clusters") or {}
+    cluster_keys = parse_cluster_keys(args.cluster_keys, all_clusters, strict=True)
+    excluded = parse_cluster_keys(
+        args.excluded_cluster_keys, all_clusters, flag="--excluded-cluster-keys"
+    )
     table_names = [t for t in args.tables.split(",") if t] or None
 
+    if not cluster_keys:
+        sys.exit("--cluster-keys resolved to no clusters; nothing to do.")
+    scopes = ", ".join(f"{d}/{c}" for d, c in sorted(cluster_keys))
+    print(
+        f"[manage_igvf_metadata] mode={args.mode}  {len(cluster_keys)} cluster(s): "
+        f"{scopes if len(cluster_keys) <= 12 else scopes[:400] + ' ...'}",
+        file=sys.stderr,
+    )
+
+    # parse_cluster_keys(strict=True) already guaranteed both levels exist, so this
+    # can no longer raise a bare KeyError on a mistyped or half-written token.
     cluster_configs = {}
     for dataset, cluster in cluster_keys:
         cluster_configs[(dataset, cluster)] = config["clusters"][dataset][cluster]
