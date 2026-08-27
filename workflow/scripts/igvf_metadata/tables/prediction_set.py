@@ -85,7 +85,22 @@ TABLE = registry.register(
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab"],
         constant_fields={
-            "file_set_type": "functional effect",
+            # "element-gene links", NOT "functional effect" (changed 2026-08-26).
+            # prediction_set.json v9 splits file_set_type into a public enum and an
+            # admin-only one, and its changelog records both halves of the move:
+            # "Extend file_set_type enum list to include element-gene links" and
+            # "Adjust file_set_type enum list to restrict usage of functional
+            # effect to admin users". We are not admin, so the old value now fails
+            # server-side -- a live POST of igvf3_h9_cardio_stroma_d8 was rejected
+            # 422 ("'functional effect' is not valid under any of the given
+            # schemas") hours after igvf2's identical payload had been accepted.
+            #
+            # --mode validate cannot catch this class of break: iu_register.py's
+            # dry run returns from Connection.post before the HTTP request, so only
+            # local jsonschema runs and permission-gated enums are never consulted.
+            # If a future portal deploy moves this value too, the symptom is a 422
+            # on round 3 and nothing downstream of prediction_set will upload.
+            "file_set_type": "element-gene links",
             "scope": "genome-wide",
             "submitter_comment": "Version 1",
         },
