@@ -253,6 +253,21 @@ def _elements_bed_row(ctx):
     return {
         "content_type": "elements reference",
         "file_format": "bed",
+        # REQUIRED for file_format bed/bigBed -- tabular_file.json says "Bed files
+        # must specify their file format type", and omitting it is not a soft
+        # warning: the whole row fails validation. The failure message is
+        # misleading, because the constraint is an anyOf and jsonschema reports the
+        # OTHER branch, so you get "'bed' is not one of ['bedpe', 'csv', 'gtf',
+        # 'gvcf', 'tar', 'tsv', 'vcf']" -- which reads as "bed is not allowed at
+        # all" when bed IS allowed and the real problem is the missing companion
+        # field. Caught by --mode validate on 2026-08-26; this row had never
+        # successfully uploaded.
+        #
+        # bed3+ (not bed4, which the enum does not offer) matches
+        # filtered_atac_fragment_file.py's established choice for the same shape:
+        # three standard BED columns plus extras. This file is
+        # chr/start/end/ElementName.
+        "file_format_type": "bed3+",
         "description": (
             f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} "
             "cells for IGV visualization"
