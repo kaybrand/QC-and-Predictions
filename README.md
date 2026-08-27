@@ -55,6 +55,18 @@ to different roots is deliberate: the code checkout, the QC-guide input
 location, and the pipeline's own output location are three independent
 things that don't have to (and often don't) live in the same place.
 
+Every place that needs a file that lives alongside a cluster's QC guide
+(the post-filter metrics TSV `resolve_exclusions.py` reads, the
+`qc_thresholds.tsv` `QC_documents` attaches, the per-dataset plots root
+`aggregate_qc_stats` scans) derives that path from the cluster's own
+`qc_guide` value rather than reconstructing `{data_dir}/plots/...` itself.
+That's what let igvf9/igvf13 be generated with
+`generate_pipeline_configs.py --qc-guide-dir <dir>` pointing at this repo's
+own `results/plots/` (their QC pass ran here, not against the shared
+`data_dir`) without any of those three consumers falling back to the wrong
+location — confirmed by their first real runs, both exit 0 with 0 manifest
+gaps.
+
 A second, separate destination — the IGVF Data Portal — is being built out
 on this branch (`igvf-portal-submission`), in parallel with the
 Synapse-only `synapse-submission` branch. There is no `main` branch — this
@@ -269,6 +281,33 @@ holds.** `qc_plots/` cannot simply be moved elsewhere: scE2G's still-imported
 
 The durable fix is one word upstream — `return ancient(RESULTS_DIR)` — and
 belongs in a PR to `EngreitzLab/scE2G`, not here.
+
+### Troubleshooting: a long first run can outlive its own cache window
+
+Observed on igvf9's first real pass through the driver (2026-08-25/26, brand
+new dataset, empty `multiome_data/` — nothing cached to skip): `warm()`
+correctly judged the existing cache not yet stale by `fetch_if_stale`'s own
+check and didn't re-fetch, but that cache's last wholesale GET was already
+~18h old when the run started, leaving only ~6h of headroom before
+`common.smk`'s 24h freshness check. Real scE2G compute for 7 clusters took
+6.5h — long enough that late-executing SLURM sub-jobs (each independently
+re-checks freshness at its own execution time, not at DAG-build time) crossed
+the 24h line mid-run and failed with `SnapshotError`, one at a time, for the
+rest of the run (30 of that run's 41 manifest gaps; the other 11 were an
+unrelated OOM that self-healed on retry, and a pre-existing `qc_documents.py`
+path bug fixed separately).
+
+Nothing here was misconfigured, and it isn't the portal-outage (V7) or
+concurrent-driver (V6) case — the fetch succeeded and the driver completed;
+the snapshot it produced simply didn't outlive the run it was warming for. No
+code change was needed: re-running the driver once the cache had naturally
+gone stale and been refreshed (by this dataset or a concurrent one sharing
+the same `state.db`) fixed it outright — `--rerun-triggers mtime` meant only
+the ~40 previously-failed/missing jobs re-ran, not the full 6.5h. Worth
+recognizing if a run degrades with a scattering of `SnapshotError` failures
+late in its job list rather than one clean abort at the start: that shape
+points at cache expiry mid-run, not a real compute failure, and the fix is
+just running it again.
 
 ## IGVF Data Portal uploads
 
