@@ -26,8 +26,14 @@ the way through:
 4. Reformatting predictions/lists into the standard sharing format
 5. Isolating candidate E2G pairs
 6. Generating scE2G feature tables
-7. Generating/updating Synapse manifests for all four shared result spaces
-   and (optionally) uploading
+7. Generating IGVF Portal manifests (`workflow/scripts/manage_igvf_metadata.py`)
+   — the primary destination on this branch, sequenced automatically as one
+   of the driver's own stages, see [Running](#running) — and, run
+   separately and not part of the driver, Synapse manifests for the four
+   shared result spaces (filtered_data/predictions/candidates/features, via
+   `workflow/scripts/manage_synapse_manifest.py`). Both default to a dry,
+   reviewable preview; uploading for real is always a separate, deliberate
+   step (see [IGVF Data Portal uploads](#igvf-data-portal-uploads))
 
 Quality gating happens once, at Snakemake parse time
 (`workflow/scripts/resolve_exclusions.py`): a cluster's cell/fragment/UMI
@@ -97,12 +103,19 @@ workflow/
       context.py, refs.py, subsamples.py   # shared per-scope context, cross-table alias refs, helpers
       tables/               # one module per IGVF metadata table (Prediction Set, Signal Files, ...)
     manage_igvf_metadata.py  # CLI entrypoint for the above (igvf-portal-submission branch only)
+    run_pipeline.py          # the driver -- preflight, cache warm, Snakemake, manifest preview, audit,
+                              # in one command per dataset (see Running below); invoked via resources/run_pipeline.sbatch
     cell_annotations.py      # annotation_lookup_key() -- shared (dataset, cluster) key resolution for the
                               # live IGVF Portal CellAnnotation cache (state.db); never reads any preview TSV
     generate_report.py       # writes {output_dir}/report.tsv -- one coverage row per cluster (quality/
                               # annotation/prediction/reformat status), safe to re-run at any point
-    list_synapse_orphans.py  # read-only: diffs Synapse's actual folder contents against the in-scope
-                              # cluster set from report.tsv; flags orphans for manual review, never deletes
+    manage_synapse_manifest.py       # Synapse-side manifest management (separate from the IGVF driver above),
+                                      # one product type (filtered_data/predictions/candidates/features) per run
+    list_synapse_orphans.py          # read-only: diffs Synapse's actual folder contents against the in-scope
+                                      # cluster set from report.tsv; flags orphans for manual review, never deletes
+    list_synapse_prediction_orphans.py  # read-only, file-level version of the above scoped to the
+                                         # collaborative "predictions" folder, where a cluster folder can be
+                                         # partially (not wholly) orphaned
   envs/                 # conda environment definitions
   config/
     example_pipeline_config.yaml    # template — copy and fill in per dataset
