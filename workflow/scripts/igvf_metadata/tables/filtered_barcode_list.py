@@ -20,8 +20,20 @@ analysis_step_version (refs.plotting_analysis_step_version_alias) is
 /analysis-step-versions/0077c8e1-f3f7-4e4e-b79e-6e6560820c9b/ as of 2026-08-25
 (previously .../209d5c8e-8ccb-48c5-8b51-6919b426cbcb/).
 
-content_type is "barcode to sample mapping" (2026-07-20 feedback, explicitly
-flagged by the user as subject to change -- was "filtered barcode list").
+content_type is "pseudobulk barcode list" -- the real value for this file
+type, and the enum member the Portal added for it. Resolved 2026-08-26 and
+verified against the live tabular_file profile (v27), where it is a public,
+non-admin-restricted value.
+
+It was "barcode to sample mapping" from 2026-07-20 until then, as a
+deliberate stopgap: the true value did not exist in the enum yet (a
+2026-08-05 upload attempt with "pseudobulk barcode list" was rejected, and
+the enum the Portal echoed back on 2026-08-06 confirms it was absent), and a
+temporarily-wrong-but-defined value still uploads and links, whereas an
+undefined one blocks everything. That tradeoff no longer applies. Any
+Filtered Barcode List uploaded before this change carries the stopgap value
+and needs a PATCH -- changing this constant changes state.payload_hash, so an
+ordinary preview reclassifies those rows as patches automatically.
 
 submitter_comment is genuinely optional/manual (per-cluster free text
 "explaining any additional filtering not described by the QC document") --
@@ -50,7 +62,7 @@ def build_alias(ctx, variant_name):
 def _row(ctx):
     return {
         "file_format": "tsv",
-        "content_type": "barcode to sample mapping",
+        "content_type": "pseudobulk barcode list",
         "documents": [refs.qc_thresholds_document_alias(ctx)],
         "file_format_specifications": [refs.filtered_barcode_list_file_format_specifications_alias(ctx)],
         "derived_from": ",".join(refs.per_cell_quality_report_aliases(ctx)),
