@@ -117,10 +117,28 @@ def main():
         run_kwargs["iu_register_path"] = args.iu_register_path
 
     report = orchestrator.run(**run_kwargs)
-    print(f"[manage_igvf_metadata] mode={args.mode}", file=sys.stderr)
-    for table_name, table_report in report.items():
-        print(f"[manage_igvf_metadata] {table_name}: {table_report['counts']}", file=sys.stderr)
+
+    # Deliberately no per-table count dump here. orchestrator.run already logs each
+    # table's counts as it goes and then prints one SUMMARY block (see
+    # orchestrator._print_run_summary) covering what was already there, what this
+    # pass uploaded, and what is still pending. Repeating the same dicts underneath
+    # that block -- which is what this used to do -- just doubled every line and
+    # buried the summary.
+    summary = report.get("_summary") or {}
+    if args.mode == "upload":
+        failed = summary.get("failed") or []
+        if failed:
+            print(
+                f"[manage_igvf_metadata] {len(failed)} row(s) could not be verified after submission; "
+                "see the FAILED section above",
+                file=sys.stderr,
+            )
+            return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    # main() returns non-zero when an upload pass submitted rows it could not read
+    # back afterwards -- exit code carries that, so a wrapper script can react
+    # without parsing the log.
+    sys.exit(main())

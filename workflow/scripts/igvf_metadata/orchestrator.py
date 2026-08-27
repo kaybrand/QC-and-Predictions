@@ -110,6 +110,138 @@ def log(msg):
     print(f"[igvf_metadata] {msg}", file=sys.stderr)
 
 
+# ---------------------------------------------------------------- summary report
+#
+# The in-flight log lines below are a running commentary: they interleave with
+# igvf_utils' own stdout debug chatter (every ">>>>>>GET ..." line is igvf_utils,
+# not us) and they say nothing about the run as a whole. Worse, iu_register.py's
+# output is captured by invoke_register and discarded on success, so a pass could
+# create real objects and print no confirmation at all.
+#
+# _print_run_summary is the fix: one block at the end answering the three
+# questions that actually matter -- what was already there, what this pass
+# uploaded, and what is still pending.
+
+_SUMMARY_WIDTH = 78
+
+# outcome -> (section key, human label). Anything not listed is bucketed as other.
+_OUTCOME_SECTIONS = {
+    "unchanged": ("already_live", "already on the Portal, payload identical"),
+    "deferred": ("pending", "waiting on a dependency -- needs a later pass"),
+    "planned-post": ("planned", "would be created"),
+    "planned-patch": ("planned", "would be updated"),
+    "skipped-family-gated": ("skipped", "not applicable to this model family"),
+    "skipped-missing-file": ("gap", "no file on disk"),
+    "invalid": ("gap", "payload failed validation"),
+    "enabled-check-failed": ("gap", "could not evaluate"),
+}
+
+
+def _row_label(row):
+    variant = f"/{row['variant']}" if row.get("variant") else ""
+    return f"{row['table']}{variant}"
+
+
+def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
+    """uploaded/failed: lists of {table, variant, kind, alias, record_id}.
+    synapse: push_to_synapse's status dict, or None when not applicable."""
+    # igvf_utils logs to stdout, we log to stderr; flush so the block lands last.
+    sys.stdout.flush()
+    out = sys.stderr
+
+    def line(s=""):
+        print(s, file=out)
+
+    buckets = {}
+    for row in coverage_rows:
+        section, _ = _OUTCOME_SECTIONS.get(row["outcome"], ("other", row["outcome"]))
+        buckets.setdefault(section, []).append(row)
+
+    datasets = sorted({r["dataset"] for r in coverage_rows}) or ["(none)"]
+    clusters = sorted({r["cluster"] for r in coverage_rows})
+    line()
+    line("=" * _SUMMARY_WIDTH)
+    line(f" SUMMARY  mode={mode}  dataset(s)={','.join(datasets)}  cluster(s)={len(clusters)}")
+    line("=" * _SUMMARY_WIDTH)
+
+    already = buckets.get("already_live", [])
+    line(f" ALREADY THERE                                            {len(already):>4} row(s)")
+    if already:
+        line("   (skipped with no Portal write: alias is live and the payload hash matches)")
+        for r in sorted(already, key=_row_label):
+            line(f"   - {_row_label(r):<44} {r['reason']}")
+
+    if mode == "upload":
+        line()
+        line(f" UPLOADED THIS PASS                                       {len(uploaded):>4} row(s)")
+        if uploaded:
+            line("   (each confirmed by re-reading the alias from the Portal database)")
+            for e in uploaded:
+                variant = f"/{e['variant']}" if e.get("variant") else ""
+                line(f"   - {e['table'] + variant:<36} {e['kind'].upper():<5} -> {e['record_id']}")
+        else:
+            line("   nothing was created or updated")
+        if failed:
+            line()
+            line(f" FAILED                                                   {len(failed):>4} row(s)")
+            line("   (submitted, but the alias could not be read back afterwards)")
+            for e in failed:
+                variant = f"/{e['variant']}" if e.get("variant") else ""
+                line(f"   - {e['table'] + variant:<36} {e['alias']}")
+    else:
+        planned = buckets.get("planned", [])
+        line()
+        line(f" PLANNED (written to manifest, NOT submitted)              {len(planned):>4} row(s)")
+        for r in sorted(planned, key=_row_label):
+            line(f"   - {_row_label(r):<44} {r['outcome']}")
+
+    pending = buckets.get("pending", [])
+    line()
+    line(f" STILL PENDING                                            {len(pending):>4} row(s)")
+    if pending:
+        line("   (normal and expected: dependencies upload in rounds, one layer per pass)")
+        waiting_on = {}
+        for r in pending:
+            waiting_on.setdefault(r["reason"], []).append(_row_label(r))
+        for dep, rows in sorted(waiting_on.items()):
+            line(f"   - waiting on {dep}:")
+            for r in sorted(rows):
+                line(f"       {r}")
+
+    gaps = buckets.get("gap", [])
+    if gaps:
+        line()
+        line(f" PROBLEMS                                                 {len(gaps):>4} row(s)")
+        for r in sorted(gaps, key=_row_label):
+            line(f"   - {_row_label(r):<30} {r['outcome']}: {r['reason'][:60]}")
+
+    skipped = buckets.get("skipped", [])
+    if skipped:
+        line()
+        line(f" NOT APPLICABLE                                           {len(skipped):>4} row(s)"
+             "   (model-family gated, expected)")
+
+    if synapse is not None:
+        line()
+        status = synapse.get("status")
+        if status == "pushed":
+            where = synapse.get("entity_id") or "syn"
+            ver = synapse.get("version")
+            line(f" SYNAPSE  cell_annotation_table.tsv CHANGED -> pushed "
+                 f"({synapse['rows']} rows, {where} v{ver})")
+        elif status == "unchanged":
+            line(f" SYNAPSE  cell_annotation_table.tsv unchanged ({synapse['rows']} rows) -- not pushed")
+        elif status == "empty":
+            line(" SYNAPSE  no shareable annotation rows yet -- nothing to push")
+
+    line()
+    if mode == "upload" and pending:
+        line(f" NEXT: {len(pending)} row(s) pending. Re-run the same command for the next pass.")
+    elif mode == "upload":
+        line(" NEXT: nothing pending. This cluster set is complete.")
+    line("=" * _SUMMARY_WIDTH)
+
+
 def _group_by_dataset(rows):
     grouped = {}
     for row in rows:
@@ -366,7 +498,9 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                 if mode == "upload":
                     # Real submission: never send a payload that cross-references
                     # something not actually live yet -- wait for a later run.
-                    log(f"DEFERRED {item_alias}: waiting on {deferred_on}")
+                    log(f"pending (normal) {table.name}"
+                        f"{'/' + variant.name if variant.name else ''}: waiting on {deferred_on}"
+                        " -- a later pass picks this up")
                     bump("deferred")
                     record_coverage(dataset, cluster, model_key, variant.name, "deferred", deferred_on)
                     continue
@@ -427,12 +561,15 @@ def _verify_and_record(conn, reader, rows):
     to_patch entries both qualify). Re-checks the portal directly rather
     than trusting iu_register.py's exit code.
 
-    Returns the entries just confirmed live, each augmented with its
-    resolved record_id -- run() feeds these into the per-(object_type,
+    Returns (verified, unverified). `verified` entries are each augmented with
+    their resolved record_id -- run() feeds these into the per-(object_type,
     dataset) accumulator alongside plan_table's "unchanged" rows, so a
     freshly-succeeded real POST/PATCH is reflected there immediately
-    rather than waiting for next run's "unchanged" pass to pick it up."""
-    verified = []
+    rather than waiting for next run's "unchanged" pass to pick it up.
+    `unverified` are the rows we submitted but could not read back; they are
+    recorded status="failed" and surfaced in the run summary, rather than being
+    counted silently against the ledger only."""
+    verified, unverified = [], []
     for entry in rows:
         # database=True: this runs seconds after invoke_register's real write, in the
         # same process -- the default Elasticsearch-backed read can lag that write and
@@ -449,7 +586,8 @@ def _verify_and_record(conn, reader, rows):
             state.record_result(
                 conn, entry["row_id"], "failed", error="not found on portal after upload attempt", now=_now()
             )
-    return verified
+            unverified.append(entry)
+    return verified, unverified
 
 
 def run(
@@ -509,13 +647,15 @@ def run(
     round_cache = {}  # shared across every table this run -- see _compute_round
     accumulator_entries = []  # collected across every table -- see per-(object_type, dataset) write-out below
     coverage_rows = []  # every (cluster, table, variant) and its outcome -- see write-out below
+    uploaded_rows, failed_rows = [], []  # upload mode only -- feed _print_run_summary
     report = {}
     for table in tables:
         to_post, to_patch, to_record, counts, coverage = plan_table(
             conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE2G_dir, data_dir, output_dir,
             mode, round_cache,
         )
-        log(f"{table.name}: {counts}")
+        if counts:
+            log(f"{table.name}: {counts}")
         accumulator_entries.extend(to_record)
         coverage_rows.extend(coverage)
 
@@ -564,11 +704,30 @@ def run(
                 if result.returncode != 0:
                     log(f"iu_register.py FAILED on {written} (exit {result.returncode}): {result.stderr[-500:]}")
                 if mode == "upload":
-                    verified = _verify_and_record(conn, reader, entries)
+                    verified, unverified = _verify_and_record(conn, reader, entries)
                     accumulator_entries.extend(
                         {"dataset": v["dataset"], "object_type": table.object_type, "record_id": v["record_id"], "payload": v["payload"]}
                         for v in verified
                     )
+                    # Per-row confirmation. iu_register.py's own "Object posted with
+                    # identifier" output is captured by invoke_register and dropped on
+                    # success, so without this a real upload prints nothing at all.
+                    # The record_id here is better than iu_register's anyway: it comes
+                    # from reading the alias back out of the Portal database.
+                    for v in verified:
+                        log(f"UPLOADED {kind.upper()} {table.name}"
+                            f"{'/' + variant_name if variant_name else ''} -> {v['record_id']}")
+                        uploaded_rows.append(
+                            {"table": table.name, "variant": variant_name, "kind": kind,
+                             "alias": v["alias"], "record_id": v["record_id"]}
+                        )
+                    for u in unverified:
+                        log(f"UNVERIFIED {kind.upper()} {table.name}"
+                            f"{'/' + variant_name if variant_name else ''}: {u['alias']} "
+                            "submitted but not readable back -- recorded as failed")
+                        failed_rows.append(
+                            {"table": table.name, "variant": variant_name, "kind": kind, "alias": u["alias"]}
+                        )
 
         report[table.name] = table_report
 
@@ -601,12 +760,24 @@ def run(
             outcomes[row["outcome"]] = outcomes.get(row["outcome"], 0) + 1
         log(f"  -> {dataset}/{MANIFEST_COVERAGE_NAME}: {len(rows)} row(s) {outcomes}")
 
+    synapse_status = None
     if mode == "upload":
-        # Re-derive and re-push the shareable Cell Annotation table whenever a real
-        # upload pass runs -- cheap and idempotent (Synapse auto-versions a repeated
-        # store() to the same File), simpler than tracking whether principal_pseudobulk_set
-        # rows specifically changed this run.
-        cell_metadata.push_to_synapse(cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir)
+        # Re-derive the shareable Cell Annotation table and push it to the E2G Pillar
+        # Synapse space ONLY IF ITS CONTENT CHANGED. Passing conn is what enables that
+        # gate (see cell_metadata.push_to_synapse): without it every pass of a
+        # six-pass upload session stored an identical new Synapse version. Content is
+        # compared by sha256, so "changed" means the locked annotation set actually
+        # moved -- not merely that an upload happened.
+        synapse_status = cell_metadata.push_to_synapse(
+            cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir, conn=conn
+        )
+
+    _print_run_summary(mode, coverage_rows, uploaded_rows, failed_rows, synapse_status)
 
     conn.close()
+    report["_summary"] = {
+        "uploaded": uploaded_rows,
+        "failed": failed_rows,
+        "synapse": synapse_status,
+    }
     return report

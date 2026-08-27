@@ -21,6 +21,7 @@ import json
 import os
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS clusters (
@@ -78,6 +79,26 @@ CREATE TABLE IF NOT EXISTS cell_annotations (
 CREATE TABLE IF NOT EXISTS cell_annotations_fetch_log (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     fetched_at TEXT NOT NULL
+);
+
+-- Small key/value scratchpad for "what did we last publish somewhere else"
+-- (2026-08-27). First and only key so far: synapse_cell_annotation_digest, the
+-- sha256 of the cell_annotation_table.tsv content most recently stored to
+-- Synapse. cell_metadata.push_to_synapse compares against it and skips the
+-- upload when the table has not actually changed, so a multi-pass upload session
+-- does not add an identical Synapse version per pass.
+--
+-- Deliberately NOT part of the uploads ledger: that table is keyed by
+-- (dataset, cluster, model, table, variant) and is about IGVF Portal objects.
+-- This is one global fact about a different destination.
+--
+-- Limitation worth knowing: this records what WE last pushed, not what is
+-- actually on Synapse. If someone edits the Synapse file by hand, the digests
+-- still match and we will not re-push. Re-push deliberately with force=True.
+CREATE TABLE IF NOT EXISTS sync_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TEXT
 );
 
 -- Every primary-pseudobulk row the multireport GET ever returned (2026-07-22),
@@ -243,6 +264,21 @@ def transaction(conn: sqlite3.Connection):
     except Exception:
         conn.rollback()
         raise
+
+
+def get_sync_state(conn, key):
+    """Value last recorded for `key`, or None. See the sync_state DDL."""
+    row = conn.execute("SELECT value FROM sync_state WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_sync_state(conn, key, value, now=None):
+    conn.execute(
+        "INSERT INTO sync_state (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, value, now or datetime.now(timezone.utc).isoformat()),
+    )
+    conn.commit()
 
 
 def get_upload(conn, dataset, cluster, model, table_name, variant):

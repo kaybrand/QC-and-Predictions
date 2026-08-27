@@ -94,6 +94,7 @@ running first. See those two functions for details.
 """
 
 import csv
+import hashlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -618,17 +619,61 @@ def _write_shareable_tsv(rows, path):
     return path
 
 
-def push_to_synapse(rows, manifest_dir=None):
-    """Writes the shareable-rows TSV and stores it as a child of
-    SYNAPSE_PARENT_ID -- synapseclient auto-versions a repeated store() to
-    the same (name, parent) File, so "keep it updated" needs no extra
-    bookkeeping here."""
+SYNAPSE_DIGEST_KEY = "synapse_cell_annotation_digest"
+
+
+def _content_digest(path):
+    with open(path, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def push_to_synapse(rows, manifest_dir=None, conn=None, force=False):
+    """Write the shareable-rows TSV, and store it as a child of
+    SYNAPSE_PARENT_ID **only if its content actually changed**.
+
+    Returns a status dict the caller can report:
+      {"status": "pushed"|"unchanged"|"empty", "rows": n, "digest": ..., "path": ...}
+    plus "entity_id"/"version" when a store() really happened.
+
+    Change detection is by sha256 of the written file, compared against
+    state.sync_state[SYNAPSE_DIGEST_KEY]. Synapse's own store() auto-versions a
+    repeated upload to the same (name, parent), so without this gate every pass
+    of a multi-pass upload session added a fresh, identical version -- and since
+    a session is six passes for one cluster, that is five versions of noise for
+    no content change.
+
+    The TSV is written locally either way: it is cheap, and it keeps
+    manifest_dir's copy current so the digest reflects the file on disk.
+
+    `conn` is required for the gate. Without it (or with force=True) this
+    unconditionally pushes, which is the old behaviour -- keep that available
+    deliberately, e.g. to repair a Synapse-side edit the digest cannot see.
+    """
     if not rows:
-        return None
-    import synapseclient
+        return {"status": "empty", "rows": 0}
 
     path = os.path.join(manifest_dir or ".", SHAREABLE_TSV_NAME)
     _write_shareable_tsv(rows, path)
+    digest = _content_digest(path)
+
+    if conn is not None and not force:
+        if state.get_sync_state(conn, SYNAPSE_DIGEST_KEY) == digest:
+            return {"status": "unchanged", "rows": len(rows), "digest": digest, "path": path}
+
+    import synapseclient
+
     syn = synapseclient.login()
     entity = synapseclient.File(path, parent=SYNAPSE_PARENT_ID, name=SHAREABLE_TSV_NAME)
-    return syn.store(entity)
+    stored = syn.store(entity)
+
+    if conn is not None:
+        state.set_sync_state(conn, SYNAPSE_DIGEST_KEY, digest)
+
+    return {
+        "status": "pushed",
+        "rows": len(rows),
+        "digest": digest,
+        "path": path,
+        "entity_id": stored.get("id") if hasattr(stored, "get") else None,
+        "version": stored.get("versionNumber") if hasattr(stored, "get") else None,
+    }
