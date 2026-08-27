@@ -18,23 +18,37 @@ here ever uploads for real unless --mode upload is passed explicitly.
 """
 
 import argparse
+import os
 import sys
 
 import yaml
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from igvf_metadata import orchestrator, tables  # noqa: F401 (tables import registers table modules)
+from igvf_metadata import orchestrator, state, tables  # noqa: F401 (tables import registers table modules)
 from igvf_metadata.context import IgvfConfig
 from pipeline_paths import resolve_repo_relative, repo_root_from_script
 
 
-def parse_cluster_keys(raw, clusters=None, strict=False, flag="--cluster-keys"):
+def parse_cluster_keys(raw, clusters=None, strict=False, flag="--cluster-keys", excluded_by_dataset=None):
     """Parse comma-separated scope tokens into a set of (dataset, cluster).
 
     Two accepted token forms:
       "dataset/cluster"  -- one specific cluster
-      "dataset"          -- EVERY cluster that dataset has in the config, which
-                            needs `clusters` (the config's "clusters" mapping)
+      "dataset"          -- every UPLOAD-ELIGIBLE cluster that dataset has in the
+                            config, which needs `clusters` (the config's
+                            "clusters" mapping)
+
+    `excluded_by_dataset`: {dataset: {cluster, ...}} of quality-excluded clusters
+    (state.excluded_clusters). A bare-dataset expansion skips them, because
+    resolve_exclusions.py gated them out and so no rule ever produced their files
+    -- including them makes every one of their rows report
+    `skipped-missing-file` and turns a clean coverage report into a wall of
+    phantom gaps. Measured on igvf3: 7 excluded clusters produced 77 such rows,
+    taking manifest_coverage.tsv from 315 rows / 0 gaps to 420 / 77.
+
+    An EXPLICIT "dataset/cluster" token is always honoured, exclusion or not: if
+    someone names a single cluster deliberately, that is an instruction, not an
+    accident.
 
     The bare-dataset form exists because a plain `--cluster-keys igvf4` used to
     partition() into ("igvf4", "") and then die on `config["clusters"]["igvf4"][""]`
@@ -55,10 +69,20 @@ def parse_cluster_keys(raw, clusters=None, strict=False, flag="--cluster-keys"):
         dataset, sep, cluster = token.partition("/")
 
         if not sep or not cluster:
-            # Bare dataset -> expand to all of its clusters.
+            # Bare dataset -> expand to its upload-eligible clusters.
             known = clusters.get(dataset)
             if known:
-                keys.update((dataset, c) for c in known)
+                skip = (excluded_by_dataset or {}).get(dataset, set())
+                eligible = [c for c in known if c not in skip]
+                keys.update((dataset, c) for c in eligible)
+                if skip:
+                    dropped = sorted(c for c in known if c in skip)
+                    print(
+                        f"[manage_igvf_metadata] {dataset}: expanded to {len(eligible)} "
+                        f"upload-eligible cluster(s); skipped {len(dropped)} quality-excluded "
+                        f"({', '.join(dropped)})",
+                        file=sys.stderr,
+                    )
                 continue
             if strict:
                 sys.exit(
@@ -129,7 +153,21 @@ def main():
 
     igvf_cfg = IgvfConfig.from_dict(config.get("igvf", {}))
     all_clusters = config.get("clusters") or {}
-    cluster_keys = parse_cluster_keys(args.cluster_keys, all_clusters, strict=True)
+
+    # Read-only peek at the exclusion table so a bare-dataset expansion can skip
+    # quality-gated clusters. Opened and closed before orchestrator.run makes its
+    # own connection -- state.db is WAL on Lustre and wants one accessor at a time.
+    excluded_by_dataset = {}
+    if os.path.exists(args.state_db):
+        _c = state.connect(args.state_db)
+        try:
+            excluded_by_dataset = {ds: state.excluded_clusters(_c, ds) for ds in all_clusters}
+        finally:
+            _c.close()
+
+    cluster_keys = parse_cluster_keys(
+        args.cluster_keys, all_clusters, strict=True, excluded_by_dataset=excluded_by_dataset
+    )
     excluded = parse_cluster_keys(
         args.excluded_cluster_keys, all_clusters, flag="--excluded-cluster-keys"
     )

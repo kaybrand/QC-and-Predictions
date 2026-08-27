@@ -547,6 +547,21 @@ def portal_file_state_counts(conn):
     }
 
 
+def excluded_clusters(conn, dataset):
+    """The clusters resolve_exclusions.py has recorded as quality-excluded for
+    `dataset`, as a set of cluster names. Empty if none / nothing recorded yet.
+
+    Used to keep a whole-dataset scope expansion from sweeping in clusters that
+    were deliberately gated out and therefore have no pipeline outputs on disk --
+    see manage_igvf_metadata.parse_cluster_keys."""
+    return {
+        row["cluster"]
+        for row in conn.execute(
+            "SELECT cluster FROM clusters WHERE dataset=? AND excluded=1", (dataset,)
+        )
+    }
+
+
 def mark_excluded(conn, dataset, cluster, reason, now):
     # Avoid referencing SQLite's "excluded" upsert pseudo-table in the DO UPDATE
     # clause -- our own column is also named "excluded", which is an
