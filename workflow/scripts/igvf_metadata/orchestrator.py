@@ -142,6 +142,29 @@ def _row_label(row):
     return f"{row['table']}{variant}"
 
 
+# Above this many rows in one section, print a per-(table, variant, outcome) tally
+# instead of one line per row. A single-cluster canary has 15 rows and reads well
+# itemised; a 28-cluster dataset has 343 and produced 343 near-identical lines with
+# no cluster name on them, which is worse than no output at all.
+_ITEMISE_LIMIT = 20
+
+
+def _print_rows(line, rows, detail):
+    """detail(row) -> the trailing text for an itemised line. Falls back to a
+    tally, sorted by descending count, once a section exceeds _ITEMISE_LIMIT."""
+    if len(rows) <= _ITEMISE_LIMIT:
+        for r in sorted(rows, key=lambda r: (_row_label(r), r["cluster"])):
+            line(f"   - {r['cluster']:<32} {_row_label(r):<40} {detail(r)}")
+        return
+    tally = {}
+    for r in rows:
+        tally.setdefault((_row_label(r), r["outcome"]), set()).add(r["cluster"])
+    line(f"   {len(rows)} rows across {len({r['cluster'] for r in rows})} cluster(s) "
+         f"-- tallied by table (over {_ITEMISE_LIMIT} to itemise):")
+    for (label, outcome), clusters in sorted(tally.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        line(f"   - {label:<44} {outcome:<15} {len(clusters):>4} cluster(s)")
+
+
 def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
     """uploaded/failed: lists of {table, variant, kind, alias, record_id}.
     synapse: push_to_synapse's status dict, or None when not applicable."""
@@ -168,8 +191,7 @@ def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
     line(f" ALREADY THERE                                            {len(already):>4} row(s)")
     if already:
         line("   (skipped with no Portal write: alias is live and the payload hash matches)")
-        for r in sorted(already, key=_row_label):
-            line(f"   - {_row_label(r):<44} {r['reason']}")
+        _print_rows(line, already, lambda r: r["reason"])
 
     if mode == "upload":
         line()
@@ -192,28 +214,48 @@ def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
         planned = buckets.get("planned", [])
         line()
         line(f" PLANNED (written to manifest, NOT submitted)              {len(planned):>4} row(s)")
-        for r in sorted(planned, key=_row_label):
-            line(f"   - {_row_label(r):<44} {r['outcome']}")
+        posts = sum(1 for r in planned if r["outcome"] == "planned-post")
+        patches = len(planned) - posts
+        line(f"   {posts} would be created (post), {patches} would be updated (patch)")
+        _print_rows(line, planned, lambda r: r["outcome"])
 
     pending = buckets.get("pending", [])
     line()
     line(f" STILL PENDING                                            {len(pending):>4} row(s)")
     if pending:
         line("   (normal and expected: dependencies upload in rounds, one layer per pass)")
+        # Grouped by dependency, then tallied per table: with many clusters the
+        # same (table, waiting-on) pair repeats once per cluster, so print the
+        # cluster count rather than one line each.
         waiting_on = {}
         for r in pending:
-            waiting_on.setdefault(r["reason"], []).append(_row_label(r))
-        for dep, rows in sorted(waiting_on.items()):
-            line(f"   - waiting on {dep}:")
-            for r in sorted(rows):
-                line(f"       {r}")
+            waiting_on.setdefault(r["reason"], {}).setdefault(_row_label(r), set()).add(r["cluster"])
+        for dep, tables in sorted(waiting_on.items()):
+            total = sum(len(v) for v in tables.values())
+            line(f"   - waiting on {dep}  ({total} row(s)):")
+            for label, clusters in sorted(tables.items()):
+                n = len(clusters)
+                suffix = f"  [{next(iter(clusters))}]" if n == 1 else f"  x{n} clusters"
+                line(f"       {label}{suffix}")
 
     gaps = buckets.get("gap", [])
     if gaps:
         line()
         line(f" PROBLEMS                                                 {len(gaps):>4} row(s)")
-        for r in sorted(gaps, key=_row_label):
-            line(f"   - {_row_label(r):<30} {r['outcome']}: {r['reason'][:60]}")
+        # Grouped by cluster, not by table: a cluster with no outputs at all fails
+        # every table the same way, so per-row lines repeat one fact ~11 times and
+        # the useful signal ("which clusters, and how many are wholly missing") is
+        # buried. Truncated absolute paths made them look identical too.
+        by_cluster = {}
+        for r in gaps:
+            by_cluster.setdefault(r["cluster"], []).append(r)
+        line(f"   {len(by_cluster)} cluster(s) affected:")
+        for cluster, rows in sorted(by_cluster.items()):
+            outcomes = sorted({r["outcome"] for r in rows})
+            line(f"   - {cluster:<34} {len(rows):>3} row(s)  {','.join(outcomes)}")
+            example = next((r["reason"] for r in rows if r["reason"]), "")
+            if example:
+                line(f"     e.g. {os.path.basename(example.split(';')[0]) or example[:70]}")
 
     skipped = buckets.get("skipped", [])
     if skipped:
