@@ -79,15 +79,10 @@ Principal Pseudobulk Set's payload-building depends on. Grouped/cached
 against EVERY cluster in the pipeline config (all_cluster_configs), not just
 this invocation's cluster_keys -- otherwise a later invocation for a
 different cluster subset, within the same TTL window, would find nothing
-cached for its own clusters. That GET is read-only, and it is the only external
-service this module contacts besides the IGVF Portal itself.
-
-This module never writes to Synapse. Until 2026-08-27, run() ended every
-mode="upload" pass by pushing the locked Cell Annotation subset to the shared
-E2G Pillar Synapse space; that is gone, and the full reasoning is recorded at the
-removal site near the end of run(). Synapse stays a separate, deliberately-invoked
-destination (manage_synapse_manifest.py, cell_metadata.push_to_synapse) and must
-never be a side effect of registering metadata on the Portal.
+cached for its own clusters. On a real upload pass (mode="upload"),
+cell_metadata.push_to_synapse() runs once at the end, re-publishing the
+"locked" subset of that cache to the shared Synapse
+space -- see cell_metadata.py for both.
 """
 
 import csv
@@ -606,20 +601,12 @@ def run(
             outcomes[row["outcome"]] = outcomes.get(row["outcome"], 0) + 1
         log(f"  -> {dataset}/{MANIFEST_COVERAGE_NAME}: {len(rows)} row(s) {outcomes}")
 
-    # NOTHING here writes to Synapse. This function used to call
-    # cell_metadata.push_to_synapse() on every mode="upload" pass, storing
-    # cell_annotation_table.tsv into the shared E2G Pillar space (syn53469844).
-    # Removed 2026-08-27: an IGVF Portal upload must not have a second
-    # destination as a side effect. Three things made it worse than it looked:
-    #   - it was ungated -- no config key, and cell_metadata.py never reads
-    #     `synapse.dry_run`, so the repo's "Synapse defaults to dry-run" safety
-    #     did not cover this path at all;
-    #   - it published EVERY dataset's locked annotations, not the cluster_keys
-    #     this invocation was asked to upload;
-    #   - it was invisible in practice, because synapseclient was absent from
-    #     igvf_utils_env and the call had always died on ImportError. Installing
-    #     that package to let upload mode finish silently activated a real push.
-    # push_to_synapse() itself is deliberately kept in cell_metadata.py: it is a
-    # thing to invoke on purpose, not a consequence of uploading.
+    if mode == "upload":
+        # Re-derive and re-push the shareable Cell Annotation table whenever a real
+        # upload pass runs -- cheap and idempotent (Synapse auto-versions a repeated
+        # store() to the same File), simpler than tracking whether principal_pseudobulk_set
+        # rows specifically changed this run.
+        cell_metadata.push_to_synapse(cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir)
+
     conn.close()
     return report
