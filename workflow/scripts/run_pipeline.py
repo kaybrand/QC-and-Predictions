@@ -68,6 +68,7 @@ REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "..", ".."))
 sys.path.insert(0, SCRIPT_DIR)
 
 import cell_annotation_snapshot as cas  # noqa: E402
+import stale_reformats  # noqa: E402
 from resolve_exclusions import resolve_exclusions, manifest_eligible_clusters  # noqa: E402
 from cell_annotations import annotation_lookup_key  # noqa: E402
 from igvf_metadata import orchestrator  # noqa: E402
@@ -295,6 +296,30 @@ def warm(ctx, dry_run):
                     digest=digest,
                 )
                 log(f"wrote snapshot {path} ({len(rows)} annotation row(s))")
+
+                # Reformatted files embed the Cell Annotation, but the reformat
+                # rules receive it as a `params:` value -- and --rerun-triggers
+                # mtime, which stage 2 always passes, does not see params change.
+                # So a Portal correction updates the manifests (rebuilt from
+                # scratch every run) while leaving the data files asserting the old
+                # cell type, and Snakemake reports nothing to do. Deleting the
+                # mismatched outputs here makes them genuinely missing, which mtime
+                # does handle, so stage 2 rebuilds exactly those.
+                #
+                # Deliberately here, not in a rule: this needs the annotations we
+                # just derived (no extra Portal contact), no rule may open
+                # state.db, and doing it before the compute keeps it clear of the
+                # snapshot's own 24h freshness window.
+                stale = stale_reformats.find_stale(
+                    os.path.join(output_dir, "uniformly_processed"), dataset, rows
+                )
+                if stale:
+                    log(f"{dataset}: {len(stale)} reformatted file(s) carry a superseded "
+                        "Cell Annotation -- deleting so stage 2 regenerates them:")
+                    for line in stale_reformats.describe(stale):
+                        log(f"    {line}")
+                    removed = stale_reformats.remove_stale(stale, log=log)
+                    log(f"{dataset}: removed {len(removed)} file(s) (including .tbi siblings)")
         finally:
             conn.close()
 

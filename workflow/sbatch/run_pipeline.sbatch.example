@@ -1,0 +1,98 @@
+#!/bin/bash
+#SBATCH --job-name=e2g_pipeline
+#SBATCH --partition=engreitz
+#SBATCH --time=3-00:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --output=slurm_logs/pipeline_%x.%j.out
+#SBATCH --error=slurm_logs/pipeline_%x.%j.err
+#
+# TEMPLATE -- copy this somewhere of your own and set the two paths below.
+#
+#     mkdir -p resources slurm_logs
+#     cp workflow/sbatch/run_pipeline.sbatch.example resources/run_pipeline.sbatch
+#     # edit REPO and FORGE
+#     sbatch resources/run_pipeline.sbatch igvf0
+#
+# It lives here, tracked, because `resources/` is gitignored in its entirety --
+# so the copy this project actually runs is not in the repo, and a fresh clone
+# would otherwise find the README pointing at a file that does not exist.
+# Everything account-specific is confined to the two variables below; the rest
+# is identical to the copy in use.
+#
+# USAGE
+#     sbatch <this> <dataset> [default|local_only] [extra driver args...]
+#
+#     sbatch <this> igvf0                  # everything, default mode
+#     sbatch <this> igvf0 local_only       # no IGVF Portal contact at all
+#     sbatch <this> igvf0 default -n       # dry run -- do this first
+#
+# REFORMAT-AND-UPLOAD ONLY (you already have scE2G outputs and only want the
+# portal-format files + manifests, without re-running or re-importing scE2G):
+#
+#     sbatch <this> igvf0 default -n \
+#         --sce2g-modules false --snakemake-arg=portal_reformat
+#     sbatch <this> igvf0 default \
+#         --sce2g-modules false --snakemake-arg=portal_reformat
+#
+# `portal_reformat` (workflow/Snakefile) targets only the reformat rules;
+# `--sce2g-modules false` skips importing scE2G per dataset, which is what makes
+# the pass parse in seconds and keeps scE2G's parse-time ABC_BIOSAMPLES rewrite --
+# and the ~140 spurious ABC/ENCODE-rE2G reruns it can trigger -- out of the DAG.
+# Only valid once scE2G outputs already exist: with no scE2G rules loaded a
+# genuinely missing prediction has no producing rule and Snakemake fails loudly
+# with MissingInputException, which is the intended behaviour.
+#
+# TWO ENVIRONMENTS, on purpose. run_snakemake9 has snakemake, conda and mamba but
+# no igvf_utils; igvf_utils_env has igvf_utils (needed for the Portal GET) and
+# SQLite >= 3.24 (state.py's UPSERTs need it; many system pythons ship 3.7) but no
+# snakemake. So: activate run_snakemake9 to put `snakemake` on PATH for
+# --use-conda, then run the driver under igvf_utils_env's interpreter. The driver
+# shells out to `snakemake` from PATH, so both halves get the interpreter they
+# need. Rename these to whatever your own two envs are called.
+#
+# CREDENTIALS: igvf_utils reads IGVF_API_KEY / IGVF_SECRET_KEY from the
+# environment, and sbatch forwards the environment by default. Never pass them as
+# arguments and never write them to a file -- this repo is public.
+#
+# The driver bakes in --conda-prefix and --rerun-triggers mtime (omitting either
+# has caused real multi-hour incidents) and can never upload: --manifest-mode
+# accepts only preview and validate.
+
+set -uo pipefail
+
+DATASET="${1:?usage: sbatch run_pipeline.sbatch <dataset> [default|local_only] [extra driver args...]}"
+MODE="${2:-default}"
+shift 2 2>/dev/null || shift 1
+
+# ---- SET THESE TWO ---------------------------------------------------------
+REPO=/path/to/your/QC-and-Predictions            # this repository
+FORGE=/path/to/your/miniforge3                   # conda/mamba install root
+# ---------------------------------------------------------------------------
+
+SNAKEMAKE_ENV=run_snakemake9      # has snakemake; no igvf_utils
+DRIVER_ENV=igvf_utils_env         # has igvf_utils + SQLite >= 3.24; no snakemake
+
+DRIVER_PY="$FORGE/envs/$DRIVER_ENV/bin/python"
+CONFIG="$REPO/workflow/config/${DATASET}_pipeline_config.yaml"
+
+[ -d "$REPO" ]      || { echo "REPO is unset or wrong: $REPO" >&2; exit 2; }
+[ -x "$DRIVER_PY" ] || { echo "no interpreter at $DRIVER_PY (check FORGE / DRIVER_ENV)" >&2; exit 2; }
+[ -f "$CONFIG" ]    || { echo "no pipeline config at $CONFIG" >&2; exit 2; }
+
+source "$FORGE/etc/profile.d/conda.sh"
+source "$FORGE/etc/profile.d/mamba.sh"
+# Defensive: nested-activation states can leave the activated env's bin/ late in
+# $PATH. Clear anything inherited before activating.
+for _ in 1 2 3; do mamba deactivate 2>/dev/null || true; done
+mamba activate "$SNAKEMAKE_ENV"
+
+cd "$REPO"
+mkdir -p slurm_logs
+"$DRIVER_PY" workflow/scripts/run_pipeline.py \
+    --pipeline-config "$CONFIG" \
+    --mode "$MODE" \
+    "$@"
+rc=$?
+echo "[run_pipeline.sbatch] driver exit=$rc  (0 = complete and verified; 1 = incomplete, see PROBLEM/DEGRADED lines)"
+exit $rc

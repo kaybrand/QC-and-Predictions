@@ -117,6 +117,10 @@ workflow/
                                          # collaborative "predictions" folder, where a cluster folder can be
                                          # partially (not wholly) orphaned
   envs/                 # conda environment definitions
+  sbatch/
+    run_pipeline.sbatch.example   # tracked template for resources/run_pipeline.sbatch (which is
+                                   # gitignored); set REPO + FORGE and copy. Documents the
+                                   # portal_reformat / --sce2g-modules false reformat-only pass.
   config/
     example_pipeline_config.yaml    # template — copy and fill in per dataset
     example_cluster_metadata.tsv    # template — copy and fill in per dataset
@@ -125,7 +129,8 @@ workflow/
 local_scripts/           # local one-off tools, gitignored (not re-included by any .gitignore pattern)
   generate_pipeline_configs.py  # bulk-generates {dataset}_pipeline_config.yaml for datasets without a
                                  # hand-curated one, from the raw pseudobulk directory listing
-resources/                # cluster-account-specific operational files, gitignored
+resources/                # cluster-account-specific operational files, gitignored ENTIRELY --
+                          # nothing here is in the repo; start from workflow/sbatch/ above
   igvf_metadata_state.db  # the state.db this branch's igvf.state_db_path config key points at
   *.sbatch                # sbatch driver scripts for running this pipeline on Sherlock
 ```
@@ -139,6 +144,50 @@ sbatch resources/run_pipeline.sbatch {dataset}              # default: everythin
 sbatch resources/run_pipeline.sbatch {dataset} local_only   # no IGVF Portal contact at all
 sbatch resources/run_pipeline.sbatch {dataset} default -n   # dry run first
 ```
+
+**`resources/` is gitignored in its entirety, so that sbatch file is not in the
+repo.** On a fresh clone, start from the tracked template — everything
+account-specific is two variables at the top:
+
+```bash
+mkdir -p resources slurm_logs
+cp workflow/sbatch/run_pipeline.sbatch.example resources/run_pipeline.sbatch
+# edit REPO and FORGE (and the two conda env names, if yours differ)
+```
+
+Or skip the wrapper and call the driver directly, which is all it does:
+
+```bash
+{path-to}/envs/igvf_utils_env/bin/python workflow/scripts/run_pipeline.py \
+    --pipeline-config workflow/config/{dataset}_pipeline_config.yaml \
+    --mode default -n
+```
+
+### Reformat and upload without re-running scE2G
+
+If you already have scE2G outputs and only want the portal-format files plus the
+IGVF manifests, target `portal_reformat` and skip importing scE2G:
+
+```bash
+sbatch resources/run_pipeline.sbatch {dataset} default -n \
+    --sce2g-modules false --snakemake-arg=portal_reformat     # dry run
+sbatch resources/run_pipeline.sbatch {dataset} default \
+    --sce2g-modules false --snakemake-arg=portal_reformat
+```
+
+`portal_reformat` (`workflow/Snakefile`) has `get_reformat_output_files()` as its
+only input, so nothing but the reformat rules can run. `--sce2g-modules false`
+skips importing scE2G per dataset: that is a parse-cost optimisation, but more
+importantly it keeps scE2G's parse-time `tmp/config_abc_biosamples.tsv` rewrite —
+and the ~140 spurious ABC/ENCODE-rE2G reruns an mtime DAG infers from it — out of
+the picture by construction. It is valid only once the scE2G outputs exist: with
+no scE2G rules loaded, a genuinely missing prediction has no producing rule and
+Snakemake fails with `MissingInputException`, which is the intended loud failure
+rather than a silent skip.
+
+scE2G config generation needs no flag — `SCE2G_CONFIGS` is built at Snakemake
+parse time (`rules/common.smk`), so `write_scE2G_config.py` runs on every
+invocation, dry runs included.
 
 Several datasets at once is safe and needs no ordering between them:
 
@@ -428,6 +477,45 @@ warming for one dataset made the TTL fresh, so every later dataset returned
 early before deriving anything and stayed permanently uncached. Split apart,
 each dataset derives its own rows offline from whatever the raw cache already
 holds, and no dataset depends on another running first.
+
+### A corrected Cell Annotation deletes the reformatted files that assert the old one
+
+The reformat rules receive the Portal's cell metadata as Snakemake **`params:`**
+values (`rules/reformat.smk`: `summary=lambda wildcards:
+portal_cell_metadata(...)["cell_annotation"]`), and the driver always passes
+`--rerun-triggers mtime`, which does not consider params. So when the Portal
+corrects an annotation and the cache is refreshed, every already-written
+reformatted file still looks current: `portal_reformat` reports `Nothing to be
+done` and the correction never reaches the data files — while the IGVF manifests
+*do* pick it up, because `manage_igvf_metadata.py` rebuilds those from scratch
+every run. The failure mode is manifests and data files disagreeing about what
+cell type a prediction describes, with no error anywhere.
+
+Stage 1 closes that gap: straight after writing the snapshot it compares each
+reformatted file's embedded `# CellAnnotation:` / `# SampleTermName:` /
+`# SampleTermID:` header against the annotations it just derived, and deletes any
+file that disagrees (plus its `.tbi`, which indexes byte offsets into a file about
+to be rewritten). Deleted outputs are genuinely missing, which mtime *does*
+handle, so stage 2 regenerates exactly those. Observed 2026-08-28: 30 stale files
+of 828 across 14 datasets, confined to the 5 clusters whose metadata had actually
+changed.
+
+All three header fields are checked, not just the annotation — a Portal term
+correction can change `SampleTermID` while leaving the annotation string
+identical, which a one-field check would pass silently.
+
+`workflow/scripts/stale_reformats.py` is also a standalone report:
+
+```bash
+python workflow/scripts/stale_reformats.py igvf0 igvf1 igvf2      # report
+python workflow/scripts/stale_reformats.py igvf2 --delete         # remove
+```
+
+Deletion is used rather than `--forcerun` (which rebuilds all 828 outputs, and
+whose `nargs='+'` swallows a following positional target) and rather than making
+the snapshot a real `input:` (`write_snapshot` is a full unconditional overwrite
+that re-stamps `derived_at` every run, so its mtime is always new and every
+reformat rule would rebuild every time).
 
 ### Reformat eligibility is gated on the CellAnnotation cache, not a preview TSV
 
