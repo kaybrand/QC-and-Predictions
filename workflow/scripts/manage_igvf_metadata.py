@@ -69,20 +69,32 @@ def parse_cluster_keys(raw, clusters=None, strict=False, flag="--cluster-keys", 
         dataset, sep, cluster = token.partition("/")
 
         if not sep or not cluster:
-            # Bare dataset -> expand to its upload-eligible clusters.
+            # Bare dataset -> expand to its MANIFEST-eligible clusters, applying the
+            # same two gates run_pipeline.py applies before it ever builds a
+            # --cluster-keys list. Without them a bare dataset sweeps in clusters
+            # that deliberately have no manifest rows and reports them as problems.
             known = clusters.get(dataset)
             if known:
-                skip = (excluded_by_dataset or {}).get(dataset, set())
+                # (a) declarative, per-cluster config flag -- the authoritative
+                #     "never put this in a manifest" marker, honoured identically by
+                #     resolve_exclusions.py:314 and rules/common.smk. Used for the
+                #     ATAC-only variant clusters, whose scATAC products are
+                #     generated but deliberately not shared this round.
+                flagged = {c for c, cfg in known.items()
+                           if isinstance(cfg, dict) and cfg.get("igvf_manifest_excluded", False)}
+                # (b) quality-gated, recorded by resolve_exclusions.py in state.db.
+                quality = (excluded_by_dataset or {}).get(dataset, set())
+                skip = flagged | quality
                 eligible = [c for c in known if c not in skip]
                 keys.update((dataset, c) for c in eligible)
-                if skip:
-                    dropped = sorted(c for c in known if c in skip)
-                    print(
-                        f"[manage_igvf_metadata] {dataset}: expanded to {len(eligible)} "
-                        f"upload-eligible cluster(s); skipped {len(dropped)} quality-excluded "
-                        f"({', '.join(dropped)})",
-                        file=sys.stderr,
-                    )
+                msg = [f"[manage_igvf_metadata] {dataset}: expanded to {len(eligible)} "
+                       f"manifest-eligible cluster(s) of {len(known)}"]
+                if flagged:
+                    msg.append(f"  skipped {len(flagged)} igvf_manifest_excluded: {', '.join(sorted(flagged))}")
+                if quality - flagged:
+                    rest = sorted(quality - flagged)
+                    msg.append(f"  skipped {len(rest)} quality-excluded: {', '.join(rest)}")
+                print("\n".join(msg), file=sys.stderr)
                 continue
             if strict:
                 sys.exit(
@@ -122,7 +134,9 @@ def main():
     p.add_argument(
         "--excluded-cluster-keys",
         default="",
-        help='comma-separated "dataset/cluster" tokens excluded this run (recorded, never uploaded)',
+        help='comma-separated "dataset/cluster" tokens to exclude this run: recorded in the '
+             "ledger AND removed from --cluster-keys, so naming a cluster here keeps it out "
+             "of the manifests even if --cluster-keys would otherwise include it",
     )
     p.add_argument("--state-db", required=True)
     p.add_argument(
@@ -172,6 +186,21 @@ def main():
         args.excluded_cluster_keys, all_clusters, flag="--excluded-cluster-keys"
     )
     table_names = [t for t in args.tables.split(",") if t] or None
+
+    # --excluded-cluster-keys must actually EXCLUDE. Until 2026-08-27 it was
+    # record-only: orchestrator.run's sole use of it is state.mark_excluded, so a
+    # cluster named in both flags was still fully processed. That was invisible
+    # while run_pipeline.py was the only caller (it never puts an excluded cluster
+    # in --cluster-keys), and surfaced the moment a bare dataset expanded to
+    # everything: passing --excluded-cluster-keys had no effect at all.
+    overlap = cluster_keys & excluded
+    if overlap:
+        cluster_keys -= overlap
+        print(
+            f"[manage_igvf_metadata] --excluded-cluster-keys removed {len(overlap)} cluster(s) "
+            f"from this run: {', '.join(f'{d}/{c}' for d, c in sorted(overlap))}",
+            file=sys.stderr,
+        )
 
     if not cluster_keys:
         sys.exit("--cluster-keys resolved to no clusters; nothing to do.")
