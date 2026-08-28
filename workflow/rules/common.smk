@@ -382,7 +382,38 @@ if DATASETS:
 # loaded, a genuinely missing prediction file has no producing rule and Snakemake
 # fails with MissingInputException. That is the desired behaviour -- loud, not a
 # silent skip -- but it does mean this is strictly a post-Phase-2 operation.
-SCE2G_MODULES_ENABLED = config.get("sce2g_modules", True)
+def _config_bool(key, default):
+    """Boolean config value that survives `--config key=false`.
+
+    Snakemake parses --config values with a literal_eval and falls back to the
+    raw string, so `--config sce2g_modules=false` yields the STRING "false" --
+    which is truthy. A bare `config.get("sce2g_modules", True)` therefore silently
+    ignored the flag: scE2G was imported anyway, and a pass meant to touch only
+    the reformat rules planned the whole generate_atac_matrix -> compute_kendall
+    -> arc_e2g cascade instead (measured 2026-08-28: 127 jobs for igvf3, 21 of
+    them compute_kendall, where 1 was expected). Only `False` or `0` happened to
+    work, which is not a contract anyone should have to know.
+
+    Raises on an unrecognised value rather than guessing: a typo silently
+    re-enabling a multi-hour cascade is exactly the failure this exists to stop.
+    """
+    value = config.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ("false", "0", "no", "off"):
+        return False
+    if text in ("true", "1", "yes", "on"):
+        return True
+    raise ValueError(
+        f"config key {key!r} must be a boolean-ish value "
+        f"(true/false/1/0/yes/no/on/off), got {value!r}"
+    )
+
+
+SCE2G_MODULES_ENABLED = _config_bool("sce2g_modules", True)
 
 GENERATED_RULES_DIR = os.path.join(workflow.basedir, "rules", "generated")
 os.makedirs(GENERATED_RULES_DIR, exist_ok=True)

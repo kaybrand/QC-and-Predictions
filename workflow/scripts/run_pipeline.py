@@ -314,12 +314,21 @@ def warm(ctx, dry_run):
                     os.path.join(output_dir, "uniformly_processed"), dataset, rows
                 )
                 if stale:
+                    verb = "would delete" if dry_run else "deleting"
                     log(f"{dataset}: {len(stale)} reformatted file(s) carry a superseded "
-                        "Cell Annotation -- deleting so stage 2 regenerates them:")
+                        f"Cell Annotation -- {verb} so stage 2 regenerates them:")
                     for line in stale_reformats.describe(stale):
                         log(f"    {line}")
-                    removed = stale_reformats.remove_stale(stale, log=log)
-                    log(f"{dataset}: removed {len(removed)} file(s) (including .tbi siblings)")
+                    # A dry run must not mutate the results tree. Report only, and
+                    # note that stage 2's own preview will therefore still show
+                    # these outputs as up to date -- the rebuild only appears once
+                    # a real run has removed them.
+                    if dry_run:
+                        log(f"{dataset}: dry run -- nothing deleted. Stage 2's preview below will NOT "
+                            "list these rebuilds, because the files are still present.")
+                    else:
+                        removed = stale_reformats.remove_stale(stale, log=log)
+                        log(f"{dataset}: removed {len(removed)} file(s) (including .tbi siblings)")
         finally:
             conn.close()
 
