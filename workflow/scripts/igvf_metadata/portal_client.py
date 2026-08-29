@@ -63,8 +63,18 @@ IU_REGISTER_DEFAULT_PATH = (
 RECORD_ID_FIELD = "record_id"  # must match iu_register.py's RECORD_ID_FIELD exactly
 
 # Transient-failure retries for READ paths only. See _retry_reads.
-READ_RETRY_ATTEMPTS = 4
-READ_RETRY_BASE_SECONDS = 3.0
+#
+# Patience over volume, deliberately. 3 requests spread across ~2 minutes
+# (wait 30 s, then 90 s) rather than the 4-in-21-seconds this started as: while
+# the DACC are absorbing a submission deadline, four impatient knocks are both
+# ruder and less likely to succeed than one that waits for a busy server.
+READ_RETRY_ATTEMPTS = 3
+READ_RETRY_BASE_SECONDS = 30.0
+READ_RETRY_BACKOFF = 3.0  # 30 s, then 90 s
+
+# Timeout for the one probe we cannot avoid (a custom, non-standard host). Matches
+# igvf_utils' own iu.TIMEOUT for real requests, rather than the 2 s its probe uses.
+MODE_PROBE_TIMEOUT_SECONDS = 60
 
 
 def _log(msg):
@@ -112,9 +122,86 @@ def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS):
                 _log(f"{description}: {type(e).__name__} on final attempt {attempt}/{attempts} -- giving up")
                 raise
             _log(f"{description}: {type(e).__name__} on attempt {attempt}/{attempts}; "
-                 f"retrying in {delay:.0f}s")
+                 f"waiting {delay:.0f}s before retrying")
             time.sleep(delay)
-            delay *= 2
+            delay *= READ_RETRY_BACKOFF
+
+
+_mode_validation_patched = False
+
+
+def _patch_mode_validation():
+    """Replace igvf_utils' Connection._validate_igvf_mode with a version that does
+    not spend a 2-second network probe to check a string we already know.
+
+    WHAT UPSTREAM DOES. Connection.igvf_mode (connection.py:161-163) calls
+    _validate_igvf_mode once per mode, whose entire body is:
+
+        try:
+            requests.get(url, timeout=2)
+        except requests.exceptions.ConnectionError:
+            self.log_error("... igvf_mode of '{}' is not valid. Should be one of
+                            '{}' or a valid demo.igvf.org hostname.")
+            raise
+
+    Read carefully, that is a HOSTNAME-VALIDITY check and nothing more. The
+    response is discarded -- no raise_for_status, no status inspection, no return
+    value, and the call site discards the return as well -- so a 500 from the
+    Portal passes it. It cannot detect a reachable-but-unhealthy Portal, which is
+    the case that actually matters under load.
+
+    WHY IT BREAKS RUNS. It catches only ConnectionError, and ReadTimeout is NOT a
+    ConnectionError -- in requests' hierarchy ReadTimeout derives from Timeout,
+    a sibling of ConnectionError (verified). So when a busy Portal accepts the
+    connection and then takes more than 2 s to answer, the exception escapes
+    uncaught and kills the run. That aborted an igvf2 pass mid-plan on 2026-08-28
+    and then killed igvf13's pass 6 at 60 of 75 rows uploaded.
+
+    WHAT WE DO INSTEAD. For the three standard modes the name is checkable
+    locally against iu.IGVF_MODES, for free, so no request is made at all -- one
+    fewer request per pass against a Portal whose maintainers (the DACC) are
+    absorbing a submission deadline. For a custom host (e.g. a demo.igvf.org
+    name) there is nothing local to check, so the probe still happens, but
+    patiently (MODE_PROBE_TIMEOUT_SECONDS, matching igvf_utils' own iu.TIMEOUT)
+    and catching Timeout as well as ConnectionError so a slow answer produces the
+    intended friendly error instead of a bare traceback.
+
+    FALLBACK. _validate_igvf_mode is private, so a future igvf_utils may rename or
+    drop it. If the attribute is absent we log once and leave upstream behaviour
+    completely alone rather than failing: the worst case is the old 2-second
+    fragility, which _retry_reads still cushions.
+    """
+    global _mode_validation_patched
+    if _mode_validation_patched:
+        return
+    _mode_validation_patched = True  # set first: never retry a failed patch per call
+
+    import igvf_utils as iu
+    import requests
+    from igvf_utils.connection import Connection
+
+    if not hasattr(Connection, "_validate_igvf_mode"):
+        _log("igvf_utils.Connection has no _validate_igvf_mode -- leaving its mode "
+             "validation untouched (upstream behaviour)")
+        return
+
+    def _validate_igvf_mode(self, url):
+        mode_name = getattr(self, "_igvf_mode", None)
+        if mode_name in iu.IGVF_MODES:
+            return  # a known mode name; nothing a network round-trip would add
+        try:
+            requests.get(url, timeout=MODE_PROBE_TIMEOUT_SECONDS)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            self.log_error(
+                f"ERROR: The specified igvf_mode of '{mode_name}' is not reachable. "
+                f"Should be one of {list(iu.IGVF_MODES.keys())} or a valid "
+                f"demo.igvf.org hostname (probed for {MODE_PROBE_TIMEOUT_SECONDS}s)."
+            )
+            raise
+
+    Connection._validate_igvf_mode = _validate_igvf_mode
+    _log(f"mode validation patched: known modes {list(iu.IGVF_MODES.keys())} are checked "
+         f"locally (no request); a custom host gets a {MODE_PROBE_TIMEOUT_SECONDS}s probe")
 
 
 class PortalReader:
@@ -134,17 +221,21 @@ class PortalReader:
         if self._conn is None:
             from igvf_utils.connection import Connection  # deferred: only needed once we actually query
 
-            # Constructing a Connection is itself a network operation: __init__'s
-            # first _add_file_handler call builds its filename from the mode, which
-            # resolves the igvf_mode property, which runs the 2-second
-            # _validate_igvf_mode probe. So the constructor is what has to be
-            # retried, not just the queries.
+            # Constructing a Connection is itself a network operation upstream:
+            # __init__'s first _add_file_handler call builds its filename from the
+            # mode, which resolves the igvf_mode property, which runs the probe. So
+            # the constructor is what has to be made safe, not just the queries.
             #
-            # Known cosmetic cost: a construction that fails *inside*
+            # _patch_mode_validation removes the probe entirely for a standard mode,
+            # which is the usual case and leaves nothing here to fail. The retry
+            # stays as a second line of defence for a custom host, and because the
+            # constructor also fetches profiles lazily elsewhere.
+            #
+            # Known cosmetic cost of a retry: a construction that fails *inside*
             # _add_file_handler may already have attached a handler, so a
-            # successful retry can duplicate lines in IU_Logs/. Duplicated log
-            # lines are a fair trade for not losing an upload pass, and it only
-            # happens on an attempt that actually failed.
+            # successful retry can duplicate lines in IU_Logs/. A fair trade for
+            # not losing an upload pass, and only on an attempt that already failed.
+            _patch_mode_validation()
             self._conn = _retry_reads(
                 "constructing the igvf_utils Connection",
                 lambda: Connection(igvf_mode=self.igvf_mode),
