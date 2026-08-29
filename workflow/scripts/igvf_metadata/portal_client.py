@@ -54,12 +54,67 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 IU_REGISTER_DEFAULT_PATH = (
     "/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/igvf_utils/igvf_utils/MetaDataRegistration/iu_register.py"
 )
 
 RECORD_ID_FIELD = "record_id"  # must match iu_register.py's RECORD_ID_FIELD exactly
+
+# Transient-failure retries for READ paths only. See _retry_reads.
+READ_RETRY_ATTEMPTS = 4
+READ_RETRY_BASE_SECONDS = 3.0
+
+
+def _log(msg):
+    print(f"[portal_client] {msg}", file=sys.stderr)
+
+
+def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS):
+    """Call fn(), retrying with exponential backoff on transient network errors.
+
+    STRICTLY FOR READS. Never wrap invoke_register or anything else that can
+    write: a retried POST is a duplicate object on the Portal, and aliases only
+    protect against that when the first attempt actually reached the server.
+
+    Why this exists. igvf_utils' Connection.igvf_mode property calls
+    _validate_igvf_mode (connection.py:178), which probes the Portal with a
+    HARD-CODED `requests.get(url, timeout=2)` -- ignoring igvf_utils' own
+    TIMEOUT = 60 for real requests. It is unhandled, so two slow seconds kill the
+    whole run. That is what aborted an igvf2 upload pass mid-plan on 2026-08-28:
+
+        requests.exceptions.ReadTimeout: HTTPSConnectionPool(host='api.data.igvf.org',
+        port=443): Read timed out. (read timeout=2)
+
+    A single upload pass makes hundreds of reads and a multi-pass --until-done run
+    makes thousands, so at 2 s of tolerance the question is not whether a blip
+    lands but when. Retrying here is much cheaper than losing a pass, and cannot
+    change Portal state because every wrapped call is a GET.
+
+    Only genuinely transient exceptions are retried; an HTTPError (a real 4xx/5xx
+    answer from the server) is re-raised immediately, because retrying a
+    considered "no" just delays the report.
+    """
+    import requests  # deferred, same as elsewhere in this module
+
+    transient = (
+        requests.exceptions.Timeout,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.ChunkedEncodingError,
+    )
+    delay = READ_RETRY_BASE_SECONDS
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except transient as e:
+            if attempt == attempts:
+                _log(f"{description}: {type(e).__name__} on final attempt {attempt}/{attempts} -- giving up")
+                raise
+            _log(f"{description}: {type(e).__name__} on attempt {attempt}/{attempts}; "
+                 f"retrying in {delay:.0f}s")
+            time.sleep(delay)
+            delay *= 2
 
 
 class PortalReader:
@@ -79,7 +134,21 @@ class PortalReader:
         if self._conn is None:
             from igvf_utils.connection import Connection  # deferred: only needed once we actually query
 
-            self._conn = Connection(igvf_mode=self.igvf_mode)
+            # Constructing a Connection is itself a network operation: __init__'s
+            # first _add_file_handler call builds its filename from the mode, which
+            # resolves the igvf_mode property, which runs the 2-second
+            # _validate_igvf_mode probe. So the constructor is what has to be
+            # retried, not just the queries.
+            #
+            # Known cosmetic cost: a construction that fails *inside*
+            # _add_file_handler may already have attached a handler, so a
+            # successful retry can duplicate lines in IU_Logs/. Duplicated log
+            # lines are a fair trade for not losing an upload pass, and it only
+            # happens on an attempt that actually failed.
+            self._conn = _retry_reads(
+                "constructing the igvf_utils Connection",
+                lambda: Connection(igvf_mode=self.igvf_mode),
+            )
         return self._conn
 
     def get_by_alias(self, alias: str, database=False):
@@ -95,7 +164,11 @@ class PortalReader:
         a database=True GET). Callers verifying a specific field's value
         right after writing it should pass database=True to read the
         database directly and avoid that false negative."""
-        return self._connection().get(alias, ignore404=True, database=database) or None
+        conn = self._connection()
+        return _retry_reads(
+            f"get_by_alias({alias})",
+            lambda: conn.get(alias, ignore404=True, database=database),
+        ) or None
 
     @property
     def base_url(self):
@@ -132,9 +205,18 @@ class PortalReader:
 
         conn = self._connection()
         url = iuu.url_join([conn.igvf_mode.url, "multireport/?"]) + query_string
-        response = requests.get(url, auth=conn.auth, timeout=iu.TIMEOUT, headers=iuu.REQUEST_HEADERS_JSON)
-        response.raise_for_status()
-        return response.json()["@graph"]
+
+        def _get():
+            response = requests.get(
+                url, auth=conn.auth, timeout=iu.TIMEOUT, headers=iuu.REQUEST_HEADERS_JSON
+            )
+            response.raise_for_status()
+            return response.json()["@graph"]
+
+        # The single most expensive read in the package (every primary/principal
+        # pseudobulk on the Portal), and the one whose failure degrades a whole
+        # driver run to "continuing with the existing raw cache".
+        return _retry_reads("multireport GET", _get)
 
 
 def _tsv_cell(value):
