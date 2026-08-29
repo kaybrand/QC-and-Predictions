@@ -423,7 +423,35 @@ def invoke_register(
     """
     cmd = [sys.executable, iu_register_path, "--profile_id", profile_id, "--infile", infile]
     if patch:
-        cmd.append("--patch")
+        # --patch ALWAYS with -w/--overwrite-array-values. That pairing IS the
+        # difference between a patch and a post here: our payload is the complete
+        # intended value, never a delta (orchestrator.build_payload recomputes
+        # every field from local config on every run), so an array field must be
+        # REPLACED, not extended.
+        #
+        # Without -w, iu_register.py defaults to extend_array_values=True:
+        # Connection.patch GETs the live record and does
+        # `val.extend(rec_json.get(key, []))`, then dedupes BY STRING. That dedupe
+        # cannot work for us, because our payload names things by ALIAS
+        # ("anshul-kundaje:igvf3-...-fragments_tsv_gz") while the live record holds
+        # UUIDs ("dd49b369-..."). The strings never match, nothing is removed, and
+        # the server -- which resolves both forms to the same UUIDs -- rejects the
+        # whole row:
+        #
+        #   422 ValidationFailure: ['dd49b369...', 'dd49b369...', '848ef0dc...',
+        #   '848ef0dc...'] has non-unique elements  (reference_files, derived_from)
+        #
+        # Every element duplicated exactly twice, all as UUIDs, is the fingerprint.
+        # This made EVERY patch of an array-valued field fail regardless of
+        # dataset; it stopped an igvf3 upload at pass 2 on three files
+        # (2026-08-29) and had already failed twice earlier the same day.
+        #
+        # Consequence to be aware of: with -w a patch is authoritative for array
+        # fields, so a value added on the Portal by hand would be removed. That is
+        # the intended meaning of a patch from this tool, whose payloads are
+        # wholly derived from local config -- but it is a real semantic, not an
+        # accident.
+        cmd += ["--patch", "--overwrite-array-values"]
     if dry_run:
         cmd.append("--dry-run")
     if igvf_mode:
