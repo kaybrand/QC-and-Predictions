@@ -690,6 +690,7 @@ def run(
     accumulator_entries = []  # collected across every table -- see per-(object_type, dataset) write-out below
     coverage_rows = []  # every (cluster, table, variant) and its outcome -- see write-out below
     uploaded_rows, failed_rows = [], []  # upload mode only -- feed _print_run_summary
+    register_failures = []  # iu_register.py non-zero exits -- a pass loop must stop on these
     report = {}
     for table in tables:
         to_post, to_patch, to_record, counts, coverage = plan_table(
@@ -745,6 +746,16 @@ def run(
                 )
                 if result.returncode != 0:
                     log(f"iu_register.py FAILED on {written} (exit {result.returncode}): {result.stderr[-500:]}")
+                    # Surfaced in the run summary so a caller looping over passes
+                    # can stop on it. iu_register.py aborts the remaining rows of
+                    # the file it was given, so a non-zero exit means part of this
+                    # round file may not have been submitted at all -- pressing on
+                    # to the next pass would build on an unknown state.
+                    register_failures.append(
+                        {"file": written, "table": table.name, "variant": variant_name,
+                         "kind": kind, "returncode": result.returncode,
+                         "stderr_tail": result.stderr[-500:]}
+                    )
                 if mode == "upload":
                     verified, unverified = _verify_and_record(conn, reader, entries)
                     accumulator_entries.extend(
@@ -817,9 +828,21 @@ def run(
     _print_run_summary(mode, coverage_rows, uploaded_rows, failed_rows, synapse_status)
 
     conn.close()
+
+    # Machine-readable roll-up, so a caller driving several passes can decide
+    # whether another pass can help without parsing the printed SUMMARY block.
+    # "pending" is the deferred count: rows whose dependency is not yet live, which
+    # is exactly what a further pass exists to resolve.
+    outcome_counts = {}
+    for row in coverage_rows:
+        outcome_counts[row["outcome"]] = outcome_counts.get(row["outcome"], 0) + 1
     report["_summary"] = {
         "uploaded": uploaded_rows,
         "failed": failed_rows,
+        "register_failures": register_failures,
         "synapse": synapse_status,
+        "pending": outcome_counts.get("deferred", 0),
+        "gaps": sum(outcome_counts.get(o, 0) for o in MANIFEST_GAP_OUTCOMES),
+        "outcomes": outcome_counts,
     }
     return report
