@@ -3,10 +3,13 @@
 
 Mirrors the GET pattern in get_igvf_cell_annotation_report.py (same auth via
 igvf_utils.Connection, same multireport endpoint, limit=all) but scoped to
-lab.title=Yang Li, WashU and reporting a different set of fields: full
-alias, cell_annotation, cell_qualifier, cell_type (term_id/term_name),
+lab.@id=/labs/yang-li/ and reporting a different set of fields: full alias,
+cell_annotation, cell_qualifier, cell_type (term_id/term_name), status,
 input_file_sets (to confirm they're curated sets, not analysis sets), and
-the files list (to find the "fragments" file's aliases/status/href/md5sum).
+the files list (to find the ATAC fragments Tabular File's own aliases/
+status/href/md5sum -- filter files where content_type == "fragments" when
+consuming this output; the query itself can't filter on a sub-embedded
+list's field).
 """
 
 import json
@@ -39,9 +42,9 @@ def fetch_multireport(igvf_mode="prod"):
     from igvf_utils.connection import Connection
 
     conn = Connection(igvf_mode=igvf_mode, no_log_file=True)
-    lab_title = quote("Yang Li, WashU")
+    lab_id = quote("/labs/yang-li/", safe="")
     query = (
-        f"type=PseudobulkSet&status%21=deleted&lab.title={lab_title}&limit=all"
+        f"type=PseudobulkSet&status%21=deleted&lab.%40id={lab_id}&limit=all"
         + "".join(f"&field={quote(f)}" for f in QUERY_FIELDS)
     )
     url = iuu.url_join([conn.igvf_mode.url, "multireport/?"]) + query
