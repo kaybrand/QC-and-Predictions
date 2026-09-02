@@ -2,20 +2,38 @@
 
 One read-only multireport GET (via portal_client.PortalReader.get_multireport,
 unchanged) enumerates every PseudobulkSet with its member `files` embedded, then
-this module selects the PRIMARY sets' ATAC/RNA/per-cell-QC files and works out
-where each one belongs on local disk.
+this module works out which files to fetch and where each one belongs on disk.
 
-Everything below was verified against api.data.igvf.org on 2026-08-17 with an
-authenticated request. Counts are from that run (1710 non-deleted PseudobulkSets).
+TWO FAMILIES, TWO PATH ORACLES
+------------------------------
+`discover()`        -- the PRIMARY sets' ATAC/RNA/per-cell-QC files (Kundaje
+                       lab). Path oracle is `submitted_file_name`; the set
+                       alias is only a corroborating cross-check.
+`discover_catlas()` -- the CATlas curated-set pseudobulks (Yang Li lab), one
+                       `fragments` file each. Path oracle is the SET ALIAS;
+                       `submitted_file_name` is the corroborating cross-check.
+                       That inversion is deliberate and load-bearing -- see
+                       that function's own docstring.
+
+The two never share a run: they select disjoint sets (`classify` returns
+"primary" for one and None for the other), and each has its own default scope,
+so neither can silently pull in the other's pseudobulks.
+
+Everything in the `discover()` section below was verified against
+api.data.igvf.org on 2026-08-17 with an authenticated request; counts are from
+that run (1710 non-deleted PseudobulkSets, since grown to 1849 as of
+2026-09-02 -- see pseudobulk_sets.py, and do not treat any total here as an
+invariant). The CATlas section was verified live on 2026-09-02.
 
 WHAT WE SELECT, and why each filter exists
 ------------------------------------------
 1. PRIMARY sets only (pseudobulk_sets.classify == "primary": input_file_sets are
    all AnalysisSets). 1069 of 1710. PRINCIPAL sets (14) are *this pipeline's own
    uploads* derived from primaries -- downloading them would re-fetch our own
-   output. The remaining 627 are CATlas mouse pseudobulks under /curated-sets/,
-   a separate workstream. See pseudobulk_sets.py for why file_set_type cannot
-   make this distinction.
+   output. The remaining 627 are CATlas pseudobulks under /curated-sets/ --
+   369 mouse AND 258 human, NOT mouse-only as this line used to claim -- handled
+   by discover_catlas() below, not by this function. See pseudobulk_sets.py for
+   why file_set_type cannot make this distinction.
 
 2. One lab (default DEFAULT_LAB, Anshul Kundaje's). Of the 1069 primary sets,
    1031 are Kundaje's and hold ALL 3087 target files; the other 38 -- from four
@@ -102,6 +120,37 @@ from collections import Counter
 from . import pseudobulk_sets
 
 DEFAULT_LAB = "/labs/anshul-kundaje/"
+
+# --- CATlas (Yang Li lab) curated-set pseudobulks -------------------------
+CATLAS_LAB = "/labs/yang-li/"
+
+# "yang-li:catlas-{species}-pseudobulk-{cluster}".
+#
+# `cluster` is (?P<cluster>.+) -- deliberately greedy-to-end and NEVER split on
+# "-", because real cluster names contain hyphens: "class-06_CTX-CGE_GABA",
+# "156_MB-ant-ve_Dmrta2_Glut", "supercluster-Bergmann_glia". `species` is
+# [a-z]+, which cannot match a hyphen, so the FIRST "-pseudobulk-" after
+# "catlas-{lowercase}" anchors the split unambiguously.
+#
+# Verified live 2026-09-02 against all 627 CATlas sets: every set has exactly
+# ONE alias, all 627 match this pattern, `species` is only "human"/"mouse", and
+# (species, cluster) is unique -- 0 collisions. No non-conforming set exists
+# today, which is precisely why a non-match must stay LOUD (needs_review) rather
+# than being silently normalised.
+CATLAS_ALIAS = re.compile(r"^yang-li:catlas-(?P<species>[a-z]+)-pseudobulk-(?P<cluster>.+)$")
+
+# The species this pipeline recognises. A new species appearing upstream must be
+# an explicit decision (it needs its own genome build, annotations and manifest
+# reference_files), never an automatic inclusion -- so an unknown species token
+# is reported, not processed.
+CATLAS_SPECIES = ("human", "mouse")
+
+# CATlas sets also carry "annotated cell by peak matrix" (hdf5), "cell
+# annotations" (tsv) and "signal of unique reads" (bigWig). scE2G consumes only
+# the fragments, so only fragments is a target; the others are deliberately not
+# fetched. The expected filename is a FORMAT STRING, not a fixed name, because
+# CATlas embeds species+cluster in it -- see catlas_expected_filename.
+CATLAS_TARGET_CONTENT_TYPES = ("fragments",)
 
 # content_type -> the filename upstream uses for it. The filename is taken from
 # submitted_file_name, never from this map; the map is the EXPECTATION, used only
@@ -290,6 +339,278 @@ def resolve_scope(row, file_obj):
     return scope, reasons
 
 
+def parse_catlas_alias(alias):
+    """(species, cluster) from a CATlas set alias, or (None, None) if it doesn't
+    conform. See CATLAS_ALIAS for why this must not split on "-"."""
+    if not alias:
+        return None, None
+    m = CATLAS_ALIAS.match(alias)
+    if not m:
+        return None, None
+    return m.group("species"), m.group("cluster")
+
+
+def catlas_dataset(species):
+    """The local dataset label for a CATlas species: "catlas-human".
+
+    This is the seam that makes species mixing structurally impossible rather
+    than merely discouraged: every path, config block and Portal alias is keyed
+    on this label, so one dataset can only ever contain one species."""
+    return f"catlas-{species}"
+
+
+def catlas_expected_filename(species, cluster):
+    """What upstream names a CATlas fragments file. Verified to match all 627
+    sets' submitted_file_name basename exactly (2026-09-02). Used ONLY as a
+    cross-check against the alias, never as the source of species/cluster."""
+    return f"{species}-{cluster}_fragments.tsv.gz"
+
+
+def catlas_resolve_scope(row, file_obj, species, cluster):
+    """Where a CATlas fragments file belongs, relative to the download root:
+    "{catlas-species}/fragments/{filename}".
+
+    THE PATH ORACLE IS THE SET ALIAS, not submitted_file_name -- the inverse of
+    resolve_scope() above, and deliberately so. CATlas's submitted_file_name is
+    a relative, non-pseudobulk-layout path ("0.file/human-Bgl_51_fragments.tsv.gz",
+    verified on all 627): it has no `pseudobulks/` component and no dataset
+    component, so neither _ABS_SFN nor _REL_SFN matches it and it cannot yield a
+    dataset at all. The alias can, and does so for 627/627 with zero exceptions.
+
+    submitted_file_name is still used for two things: the FILENAME (taken
+    verbatim, same discipline as the Kundaje path -- mirror what upstream
+    actually named the bytes) and as a CROSS-CHECK, since it independently
+    encodes species+cluster. A disagreement between the two means one of our two
+    assumptions broke, which is a needs_review, never a silent pick-one.
+
+    There is no annotation/subsample dir level here: a CATlas set is one cluster
+    with one fragments file, so the Kundaje layout's
+    "annotation-{annotation}-{subsample}" directory has nothing to represent.
+    `subsample` stays None; `annotation` carries the cluster, which is what the
+    manifest and comparison layers group on."""
+    sfn = file_obj.get("submitted_file_name") or ""
+    reasons = []
+    scope = {
+        "submitted_file_name": sfn or None,
+        "dataset": None,
+        "annotation": cluster,
+        "subsample": None,
+        "dirname": None,
+        "filename": None,
+        "rel_path": None,
+    }
+    if not species or not cluster:
+        reasons.append("unparseable_catlas_alias")
+        return scope, reasons
+    if species not in CATLAS_SPECIES:
+        # Not fatal, but must not be processed as if we knew what to do with it:
+        # a new species needs its own genome build and manifest reference_files.
+        reasons.append(f"unknown_species:{species}")
+
+    scope["dataset"] = catlas_dataset(species)
+    expected = catlas_expected_filename(species, cluster)
+    if sfn:
+        scope["filename"] = os.path.basename(sfn)
+        if scope["filename"] != expected:
+            reasons.append(f"unexpected_filename:{scope['filename']}")
+    else:
+        reasons.append("no_submitted_file_name")
+        scope["filename"] = expected
+        reasons.append("filename_from_alias")
+
+    upload_status = file_obj.get("upload_status")
+    if upload_status != "validated":
+        # 3 of the 627 are "invalidated" as of 2026-09-02 (the portal's own
+        # checkfiles rejected them), one of which is human
+        # (supercluster-Bergmann_glia). Surfaced per-row so the ledger is
+        # self-describing, but still ATTEMPTED -- same "download what exists,
+        # flag it" stance the irregular Kundaje sets get. The md5 check is what
+        # actually decides whether the bytes are usable.
+        reasons.append(f"upload_status:{upload_status}")
+
+    scope["rel_path"] = os.path.join(scope["dataset"], "fragments", scope["filename"])
+    return scope, reasons
+
+
+def _file_record(row, file_obj, scope, reasons, row_lab, set_accession, set_alias, pas):
+    """The one definition of a discovery record's shape. Both discover() and
+    discover_catlas() build rows through here so the two families cannot drift
+    apart on the keys download_portal_pseudobulks.record_discovery and
+    state.upsert_portal_file require."""
+    return {
+        "accession": file_obj.get("accession"),
+        "file_set": row.get("@id"),
+        "principal_analysis_set": pas,
+        "lab": row_lab,
+        "content_type": file_obj.get("content_type"),
+        "file_format": file_obj.get("file_format"),
+        "href": file_obj.get("href"),
+        "s3_uri": file_obj.get("s3_uri"),
+        "alias": (file_obj.get("aliases") or [None])[0],
+        "md5sum": file_obj.get("md5sum"),
+        "file_size": file_obj.get("file_size"),
+        "portal_status": file_obj.get("status"),
+        "upload_status": file_obj.get("upload_status"),
+        "submitted_file_name": scope["submitted_file_name"],
+        "dataset": scope["dataset"],
+        "annotation": scope["annotation"],
+        "subsample": scope["subsample"],
+        "rel_path": scope["rel_path"],
+        "review_reasons": reasons,
+        "set_accession": set_accession,
+        "set_alias": set_alias,
+    }
+
+
+def _empty_report(total):
+    """The report shape both discover() and discover_catlas() fill, so
+    log_report() can print either. Counters describe everything seen AND
+    everything excluded, so no exclusion is silent."""
+    return {
+        "sets_total": total,
+        "sets_by_class": Counter(),
+        "unclassified_by_collection": Counter(),
+        "primary_by_lab": Counter(),
+        "files_by_content_type": Counter(),
+        "files_excluded_by_status": Counter(),
+        # Surfaced because it is the only field that says anything about whether
+        # the BYTES exist -- href and s3_uri are calculated from record identity
+        # and are present even for a file whose S3 object 404s (verified across
+        # all 9832 files on every PseudobulkSet: both fields present 100% of the
+        # time, for every upload_status value). "validated" is the healthy value;
+        # "invalidated" means the portal's own checkfiles rejected the file.
+        # 477 Kundaje `peaks` files are in that state, and 3 of the 627 CATlas
+        # fragments files -- out of scope to fix here, but a TARGET content_type
+        # landing there must never pass silently.
+        "upload_status": Counter(),
+        "sets_missing_content_type": Counter(),
+        "review_reasons": Counter(),
+        "datasets": Counter(),
+        "sets_selected": 0,
+        "sets_with_no_target_files": 0,
+    }
+
+
+def discover_catlas(reader, species=None, content_types=None):
+    """Returns (records, report) for the CATlas (Yang Li lab) curated-set
+    pseudobulks. Same contract as discover(): nothing is dropped for being
+    irregular, irregular rows come back with review_reasons set.
+
+    species: None (THE DEFAULT) selects EVERY CATlas cluster, both species --
+        627 sets as of 2026-09-02. Passing "human" (or an iterable of species)
+        selects ONLY those, and is the supported way to run one species.
+
+    Species can never mix within a dataset: the dataset label is
+    "catlas-{species}" (catlas_dataset), so the species is part of the identity
+    of every path and alias downstream rather than a filter applied over a
+    shared namespace. Restricting by species narrows which datasets appear; it
+    can never produce a dataset holding two species.
+
+    A CATlas set is skipped ONLY for being a different species than requested,
+    or for not being a CATlas set at all. Every other irregularity is reported.
+    """
+    wanted_species = None
+    if species is not None:
+        wanted_species = {species} if isinstance(species, str) else set(species)
+        unknown = wanted_species - set(CATLAS_SPECIES)
+        if unknown:
+            raise ValueError(
+                f"unknown CATlas species {sorted(unknown)}; known: {list(CATLAS_SPECIES)}"
+            )
+
+    wanted_types = set(content_types or CATLAS_TARGET_CONTENT_TYPES)
+    unknown_types = wanted_types - set(CATLAS_TARGET_CONTENT_TYPES)
+    if unknown_types:
+        raise ValueError(
+            f"unknown CATlas content_type(s): {sorted(unknown_types)}; "
+            f"known: {list(CATLAS_TARGET_CONTENT_TYPES)}"
+        )
+
+    rows = reader.get_multireport(multireport_query())
+    log(f"multireport returned {len(rows)} PseudobulkSet row(s)")
+
+    report = _empty_report(len(rows))
+    report["catlas_sets_by_species"] = Counter()
+    report["catlas_sets_skipped_by_species"] = Counter()
+    report["catlas_nonconforming_aliases"] = []
+    records = []
+
+    for row in rows:
+        row_lab = (row.get("lab") or {}).get("@id")
+        if row_lab != CATLAS_LAB:
+            continue
+        alias = _alias_of(row)
+        set_species, cluster = parse_catlas_alias(alias)
+        if set_species is None:
+            # Zero of these exist today. If one ever appears it is a genuine
+            # upstream convention change and must be loud, because the alias is
+            # this family's only path oracle -- there is no fallback that could
+            # place the file correctly.
+            report["catlas_nonconforming_aliases"].append(
+                {"set": row.get("accession"), "alias": alias}
+            )
+            log(
+                f"NON-CONFORMING CATlas alias on {row.get('accession')}: {alias!r} -- "
+                "cannot resolve species/cluster, skipping (see portal_files.CATLAS_ALIAS)"
+            )
+            continue
+
+        report["catlas_sets_by_species"][set_species] += 1
+        if wanted_species is not None and set_species not in wanted_species:
+            report["catlas_sets_skipped_by_species"][set_species] += 1
+            continue
+
+        report["sets_by_class"][pseudobulk_sets.classify(row) or "unclassified"] += 1
+        pas = pseudobulk_sets.principal_analysis_set(row)
+        set_accession = row.get("accession")
+        seen_types, set_records, excluded_by_status = set(), [], []
+
+        for f in row.get("files") or []:
+            ct = f.get("content_type")
+            if ct not in wanted_types:
+                continue
+            status = f.get("status")
+            if status in EXCLUDED_FILE_STATUSES:
+                excluded_by_status.append(f"{ct}:{status}")
+                continue
+            seen_types.add(ct)
+            scope, reasons = catlas_resolve_scope(row, f, set_species, cluster)
+            set_records.append(
+                _file_record(row, f, scope, reasons, row_lab, set_accession, alias, pas)
+            )
+
+        if not set_records:
+            report["sets_with_no_target_files"] += 1
+            continue
+
+        missing = wanted_types - seen_types
+        if missing:
+            report["sets_missing_content_type"][",".join(sorted(missing))] += 1
+            log(
+                f"INCOMPLETE {set_accession} ({alias}): has {sorted(seen_types)}, "
+                f"missing {sorted(missing)} -- keeping what exists"
+            )
+            for r in set_records:
+                r["review_reasons"] = r["review_reasons"] + [
+                    "set_missing:" + ",".join(sorted(missing))
+                ]
+
+        for rec in set_records:
+            report["files_by_content_type"][rec["content_type"]] += 1
+            report["upload_status"][rec["upload_status"]] += 1
+            if rec["dataset"]:
+                report["datasets"][rec["dataset"]] += 1
+            for reason in rec["review_reasons"]:
+                report["review_reasons"][reason.split(":", 1)[0]] += 1
+        for tag in excluded_by_status:
+            report["files_excluded_by_status"][tag] += 1
+
+        report["sets_selected"] += 1
+        records.extend(set_records)
+
+    return records, report
+
+
 def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
     """Returns (records, report).
 
@@ -309,28 +630,7 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
     rows = reader.get_multireport(multireport_query())
     log(f"multireport returned {len(rows)} PseudobulkSet row(s)")
 
-    report = {
-        "sets_total": len(rows),
-        "sets_by_class": Counter(),
-        "unclassified_by_collection": Counter(),
-        "primary_by_lab": Counter(),
-        "files_by_content_type": Counter(),
-        "files_excluded_by_status": Counter(),
-        # Surfaced because it is the only field that says anything about whether
-        # the BYTES exist -- href and s3_uri are calculated from record identity
-        # and are present even for a file whose S3 object 404s (verified across
-        # all 9832 files on every PseudobulkSet: both fields present 100% of the
-        # time, for every upload_status value). "validated" is the healthy value;
-        # "invalidated" means the portal's own checkfiles rejected the file, and
-        # 477 Kundaje `peaks` files are in that state today -- out of scope for us,
-        # but if a TARGET content_type ever lands there it must not pass silently.
-        "upload_status": Counter(),
-        "sets_missing_content_type": Counter(),
-        "review_reasons": Counter(),
-        "datasets": Counter(),
-        "sets_selected": 0,
-        "sets_with_no_target_files": 0,
-    }
+    report = _empty_report(len(rows))
     records = []
 
     for row in rows:
@@ -367,29 +667,7 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
             seen_types.add(ct)
             scope, reasons = resolve_scope(row, f)
             set_records.append(
-                {
-                    "accession": f.get("accession"),
-                    "file_set": row.get("@id"),
-                    "principal_analysis_set": pas,
-                    "lab": row_lab,
-                    "content_type": ct,
-                    "file_format": f.get("file_format"),
-                    "href": f.get("href"),
-                    "s3_uri": f.get("s3_uri"),
-                    "alias": (f.get("aliases") or [None])[0],
-                    "md5sum": f.get("md5sum"),
-                    "file_size": f.get("file_size"),
-                    "portal_status": status,
-                    "upload_status": f.get("upload_status"),
-                    "submitted_file_name": scope["submitted_file_name"],
-                    "dataset": scope["dataset"],
-                    "annotation": scope["annotation"],
-                    "subsample": scope["subsample"],
-                    "rel_path": scope["rel_path"],
-                    "review_reasons": reasons,
-                    "set_accession": set_accession,
-                    "set_alias": alias,
-                }
+                _file_record(row, f, scope, reasons, row_lab, set_accession, alias, pas)
             )
 
         # The `datasets` restriction is applied BEFORE any per-file accounting
@@ -443,8 +721,28 @@ def log_report(report):
     log(f"sets by classification: {dict(report['sets_by_class'])}")
     if report["unclassified_by_collection"]:
         log(f"  unclassified sets by input collection: {dict(report['unclassified_by_collection'])}")
-    log(f"primary sets by lab: {dict(report['primary_by_lab'])}")
-    log(f"primary sets selected: {report['sets_selected']}")
+    if report["primary_by_lab"]:
+        log(f"primary sets by lab: {dict(report['primary_by_lab'])}")
+    # CATlas-only keys, absent from a discover() report -- .get() so one
+    # function can print either family without branching on which ran.
+    by_species = report.get("catlas_sets_by_species")
+    if by_species:
+        log(f"CATlas sets by species: {dict(by_species)}")
+    skipped_species = report.get("catlas_sets_skipped_by_species")
+    if skipped_species:
+        log(
+            f"  skipped as a non-requested species: {dict(skipped_species)} "
+            "(this is the --species filter working, not a problem)"
+        )
+    nonconforming = report.get("catlas_nonconforming_aliases")
+    if nonconforming:
+        log(
+            f"  WARNING: {len(nonconforming)} CATlas set(s) have a NON-CONFORMING alias and were "
+            "skipped -- the alias is this family's only path oracle, so these cannot be placed:"
+        )
+        for item in nonconforming[:10]:
+            log(f"    {item['set']}: {item['alias']!r}")
+    log(f"sets selected: {report['sets_selected']}")
     log(f"files by content_type: {dict(report['files_by_content_type'])}")
     upload = dict(report["upload_status"])
     log(f"files by portal upload_status: {upload}")

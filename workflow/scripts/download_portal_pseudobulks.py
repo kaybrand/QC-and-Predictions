@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Download primary-pseudobulk ATAC/RNA/per-cell-QC files from the IGVF Portal.
+"""Download pseudobulk component files from the IGVF Portal.
 
 Discovery lives in igvf_metadata/portal_files.py, the transfer loop in
 igvf_metadata/downloader.py, the ledger in igvf_metadata/state.py. This file is
 just the CLI that wires them together.
+
+TWO FAMILIES, selected by --family (they select disjoint sets on the portal and
+cannot be combined in one run):
+
+  --family kundaje (default)  primary-pseudobulk ATAC/RNA/per-cell-QC files.
 
     python download_portal_pseudobulks.py \
         --download-root /scratch/users/$USER/pseudobulk_portal \
@@ -11,14 +16,35 @@ just the CLI that wires them together.
         --datasets igvf10 \
         --dry-run
 
-Run it under Slurm, never on a login node -- a full run is thousands of files
-and hours of network I/O. See resources/run_portal_download.sbatch.
+  --family catlas             the Yang Li lab CATlas curated-set pseudobulks,
+                              fragments only. DEFAULT IS ALL 627 CLUSTERS
+                              (both species); --species narrows it.
 
-The output layout MIRRORS what the pipeline already expects:
-    {download-root}/{dataset}/pseudobulks/annotation-{annotation}-{subsample}/
-so repointing `pseudobulks_root` in a *_pipeline_config.yaml is the only change
-needed to run on downloaded rather than archive-extracted data -- no change to
-filter_atac_fragments.py or filter_rna_counts.py, which glob that layout.
+    # every Yang Li cluster, both species
+    python download_portal_pseudobulks.py --family catlas \
+        --download-root /scratch/users/$USER/catlas --state-db resources/igvf_metadata_state.db
+
+    # ONLY human (258 clusters, ~0.76 TiB)
+    python download_portal_pseudobulks.py --family catlas --species human \
+        --download-root /scratch/users/$USER/catlas --state-db resources/igvf_metadata_state.db
+
+Run it under Slurm, never on a login node -- a full run is hundreds to thousands
+of files and hours of network I/O. See resources/run_portal_download.sbatch.
+
+OUTPUT LAYOUT, per family. Both put `dataset` first, which is what keeps species
+from ever mixing: a CATlas dataset label is "catlas-{species}", so one directory
+can only hold one species.
+
+  kundaje: {download-root}/{dataset}/pseudobulks/annotation-{annotation}-{subsample}/
+           This MIRRORS what the pipeline already expects, so repointing
+           `pseudobulks_root` in a *_pipeline_config.yaml is the only change
+           needed to run on downloaded rather than archive-extracted data -- no
+           change to filter_atac_fragments.py or filter_rna_counts.py, which
+           glob that layout.
+  catlas:  {download-root}/catlas-{species}/fragments/{species}-{cluster}_fragments.tsv.gz
+           There is no annotation/subsample level: a CATlas set is one cluster
+           with one fragments file. These are consumed by exact path via each
+           cluster's `atac_frag_file` config key, not by globbing.
 
 Resumability is a property of the ledger, not of this process: every file's
 outcome is committed as it completes, so an interrupted run (walltime, node
@@ -65,22 +91,42 @@ def parse_args(argv=None):
     )
     p.add_argument("--state-db", required=True, help="the same SQLite ledger manage_igvf_metadata.py uses")
     p.add_argument(
+        "--family",
+        choices=("kundaje", "catlas"),
+        default="kundaje",
+        help="which pseudobulk family to fetch. 'kundaje' (default) = the primary "
+        "ATAC/RNA/per-cell-QC pseudobulks this pipeline has always consumed. 'catlas' = the "
+        "Yang Li lab curated-set CATlas pseudobulks (fragments only). The two select disjoint "
+        "sets and cannot be combined in one run.",
+    )
+    p.add_argument(
+        "--species",
+        default="",
+        help="CATlas only (--family catlas). Comma-separated species to restrict to, e.g. "
+        "'human'. DEFAULT (empty) retrieves ALL Yang Li clusters, both species. Species can "
+        f"never mix within a dataset regardless: the dataset label is 'catlas-{{species}}'. "
+        f"Known species: {','.join(portal_files.CATLAS_SPECIES)}.",
+    )
+    p.add_argument(
         "--datasets",
         default="",
         help="comma-separated dataset labels to restrict to (e.g. igvf10,igvf9). Default: every "
-        "dataset discovered on the portal.",
+        "dataset discovered on the portal. --family kundaje only; use --species for CATlas, "
+        "whose dataset labels are derived from the species.",
     )
     p.add_argument(
         "--lab",
         default=portal_files.DEFAULT_LAB,
         help=f"only download primary pseudobulks from this lab @id (default {portal_files.DEFAULT_LAB}). "
         "Pass an empty string to disable the filter -- but note other labs' pseudobulks do not "
-        "follow this directory convention.",
+        "follow this directory convention. --family kundaje only; --family catlas is pinned to "
+        f"{portal_files.CATLAS_LAB} by construction.",
     )
     p.add_argument(
         "--content-types",
-        default=",".join(sorted(portal_files.TARGET_CONTENT_TYPES)),
-        help="comma-separated portal content_type values to fetch",
+        default=None,
+        help="comma-separated portal content_type values to fetch. Defaults to every target "
+        "content_type of the selected --family.",
     )
     p.add_argument("--max-workers", type=int, default=4, help="concurrent transfers (default 4)")
     p.add_argument(
@@ -158,14 +204,52 @@ def verify_against_archive(records, archive_root, skip_datasets=()):
 def main(argv=None):
     args = parse_args(argv)
     datasets = {d.strip() for d in args.datasets.split(",") if d.strip()} or None
-    content_types = {c.strip() for c in args.content_types.split(",") if c.strip()}
+    species = {s.strip() for s in args.species.split(",") if s.strip()} or None
+    content_types = (
+        {c.strip() for c in args.content_types.split(",") if c.strip()}
+        if args.content_types
+        else None
+    )
+
+    # Reject flags belonging to the other family up front rather than ignoring
+    # them: a run that silently drops "--species human" would download all 627
+    # CATlas clusters, and a run that silently drops "--datasets" would download
+    # far more than asked. Both are expensive mistakes to discover afterwards.
+    if args.family == "catlas":
+        if datasets:
+            raise SystemExit(
+                "--datasets does not apply to --family catlas: CATlas dataset labels are derived "
+                "from the species (catlas-human/catlas-mouse). Use --species instead."
+            )
+        if args.lab != portal_files.DEFAULT_LAB:
+            raise SystemExit(
+                f"--lab does not apply to --family catlas, which is pinned to {portal_files.CATLAS_LAB}."
+            )
+        unknown_species = (species or set()) - set(portal_files.CATLAS_SPECIES)
+        if unknown_species:
+            # Checked here as well as in discover_catlas so a typo is a one-line
+            # CLI error, not a traceback -- and so it fails before the Portal GET.
+            raise SystemExit(
+                f"unknown --species {sorted(unknown_species)}; "
+                f"known: {','.join(portal_files.CATLAS_SPECIES)}"
+            )
+    elif species:
+        raise SystemExit("--species only applies to --family catlas.")
 
     conn = state.connect(args.state_db)
     reader = portal_client.PortalReader(igvf_mode=args.igvf_mode)
 
-    records, report = portal_files.discover(
-        reader, lab=args.lab or None, content_types=content_types, datasets=datasets
-    )
+    if args.family == "catlas":
+        log(
+            "family=catlas, species=%s" % (",".join(sorted(species)) if species else "ALL (default)")
+        )
+        records, report = portal_files.discover_catlas(
+            reader, species=species, content_types=content_types
+        )
+    else:
+        records, report = portal_files.discover(
+            reader, lab=args.lab or None, content_types=content_types, datasets=datasets
+        )
     portal_files.log_report(report)
 
     now = _now()

@@ -29,14 +29,26 @@ Two traps this encodes, both verified 2026-08-17 against api.data.igvf.org:
    draft of the caller assumed "@type" was available and silently classified
    everything as None.
 
-Real distribution of the 1710 non-deleted PseudobulkSets (2026-08-17):
-  primary 1069 | mixed 627 | principal 14
-The 627 "mixed" are all-/curated-sets/ CATlas mouse pseudobulks
-(yang-li:catlas-mouse-pseudobulk-*, input file_set_type "external sequencing
-data") -- correctly excluded here; they are a separate workstream with a
-different filename convention. A dataset appearing in that bucket is expected,
-not a bug, but callers should COUNT and report it rather than dropping it
-silently.
+Real distribution of the non-deleted PseudobulkSets, re-counted live
+(2026-09-02; the 2026-08-17 numbers are kept alongside to show what moves):
+  2026-09-02: 1849 total -- primary 1084 | mixed 627 | principal 138
+  2026-08-17: 1710 total -- primary 1069 | mixed  627 | principal  14
+`primary` and `principal` both grow as upstream and this pipeline upload more;
+only `mixed` has held still so far. Do not treat any of these as invariants.
+
+The 627 "mixed" are all-/curated-sets/ CATlas pseudobulks
+(yang-li:catlas-{species}-pseudobulk-{cluster}, input file_set_type "external
+sequencing data"). They are BOTH SPECIES, not mouse only: **369 mouse and 258
+human**, verified live 2026-09-02. An earlier version of this docstring claimed
+they were all mouse, which is wrong and would mislead anything that inherits
+the assumption (portal_files.py's discovery filter, in particular -- CATlas
+human is the workstream actively being submitted).
+
+They are correctly excluded from `classify`'s primary/principal split -- they
+have a different filename convention and a different path oracle -- but they
+are NOT out of scope for this repo: see portal_files.discover_catlas. A dataset
+appearing in that bucket is expected, not a bug, but callers should COUNT and
+report it rather than dropping it silently.
 """
 
 ANALYSIS_SET_PREFIX = "/analysis-sets/"
