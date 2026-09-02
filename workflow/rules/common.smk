@@ -165,7 +165,12 @@ wildcard_constraints:
 # accordingly.
 # ---------------------------------------------------------------------------
 CONFIG_DIR = os.path.join(workflow.basedir, "config")
-RESULTS_DIR_BASE = os.path.join(config["scE2G_dir"], "results", "uniformly_processed")
+# Overridable per-run: datasets that must not mix into the shared IGVF
+# Uniformly Processed results tree (e.g. catlas, which has its own worktree
+# and submission target) can set results_dir_base in their own config.
+RESULTS_DIR_BASE = config.get(
+    "results_dir_base", os.path.join(config["scE2G_dir"], "results", "uniformly_processed")
+)
 
 CELL_CLUSTERS_TABLES = {}
 RESULTS_DIRS = {}
