@@ -58,7 +58,7 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
     return cell_count, fragments_total, umi_count
 
 
-def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna):
+def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, cluster_cfg):
     """
     Returns a dict {cell_count, fragments_total, umi_count} for one
     (dataset, cluster), or None if none of the required source files exist
@@ -67,17 +67,31 @@ def compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, pseudobul
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
     """
-    qc_guide_name = os.path.basename(qc_guide_path)
+    has_rna = cluster_cfg["models"] != ["scATAC_powerlaw_v3"]
     cluster_plots_dir = os.path.join(plots_dir, dataset, cluster)
     metrics_path = os.path.join(cluster_plots_dir, "filtered_cell_subsample_metrics.tsv")
 
-    if qc_guide_name == DEFAULT_QC_GUIDE_NAME and os.path.exists(metrics_path):
+    if "atac_frag_file" in cluster_cfg:
+        # Fragments arrive already filtered/QC'd (e.g. catlas) -- no QC guide,
+        # no per-cell QC table. Stats come only from filtered_cell_subsample_metrics.tsv,
+        # once rule prefiltered_cell_subsample_metrics has produced it (see
+        # prefiltered_fragments.smk) -- same "no stats yet" bootstrap as any
+        # brand-new cluster below.
+        if not os.path.exists(metrics_path):
+            return None
         cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(metrics_path)
     else:
-        per_cell_qc_path = os.path.join(datatables_dir, f"{dataset}_data", f"{pseudobulk_annotation}_per_cell_qc.tsv")
-        if not os.path.exists(qc_guide_path) or not os.path.exists(per_cell_qc_path):
-            return None
-        cell_count, fragments_total, umi_count = _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path)
+        qc_guide_path = cluster_cfg["qc_guide"]
+        qc_guide_name = os.path.basename(qc_guide_path)
+        if qc_guide_name == DEFAULT_QC_GUIDE_NAME and os.path.exists(metrics_path):
+            cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(metrics_path)
+        else:
+            per_cell_qc_path = os.path.join(
+                datatables_dir, f"{dataset}_data", f"{cluster_cfg['pseudobulk_annotation']}_per_cell_qc.tsv"
+            )
+            if not os.path.exists(qc_guide_path) or not os.path.exists(per_cell_qc_path):
+                return None
+            cell_count, fragments_total, umi_count = _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path)
 
     return {
         "cell_count": cell_count,
@@ -134,11 +148,7 @@ def resolve_exclusions(config, data_dir):
     for dataset, cluster, cluster_cfg in _iter_cluster_configs(config["clusters"]):
         key = (dataset, cluster)
         all_clusters.add(key)
-        has_rna = cluster_cfg["models"] != ["scATAC_powerlaw_v3"]
-        stats = compute_cluster_stats(
-            plots_dir, datatables_dir, dataset, cluster,
-            cluster_cfg["pseudobulk_annotation"], cluster_cfg["qc_guide"], has_rna,
-        )
+        stats = compute_cluster_stats(plots_dir, datatables_dir, dataset, cluster, cluster_cfg)
         stats_by_cluster[key] = stats
 
         if key in user_specified:

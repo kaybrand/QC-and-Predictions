@@ -134,7 +134,13 @@ def write_cell_clusters_table(dataset, dataset_clusters_cfg, included_cluster_na
         for cluster in included_cluster_names:
             cluster_cfg = dataset_clusters_cfg[cluster]
             is_atac_only = cluster_cfg["models"] == ["scATAC_powerlaw_v3"]
-            atac_frag_file = os.path.join(out_dir_data, cluster, f"atac_fragments_{dataset}_{cluster}.tsv.gz")
+            if "atac_frag_file" in cluster_cfg:
+                # Already-filtered/QC'd fragments (e.g. catlas) -- use the literal
+                # path directly, bypassing atac_fragment_file/filter_atac_fragments.py
+                # entirely (that rule is simply never requested for these clusters).
+                atac_frag_file = cluster_cfg["atac_frag_file"]
+            else:
+                atac_frag_file = os.path.join(out_dir_data, cluster, f"atac_fragments_{dataset}_{cluster}.tsv.gz")
             rna_matrix_file = "" if is_atac_only else os.path.join(out_dir_data, cluster, f"rna_count_matrix_{dataset}_{cluster}")
             existing[cluster] = {
                 "cluster": cluster,
@@ -160,8 +166,12 @@ def write_cluster_metadata_table(dataset, dataset_clusters_cfg, included_cluster
             current = existing.get(cluster, {})
             # Never clobber a manually-filled (non-TODO) value with a fresh join result.
             if current.get("cell_type", "TODO").startswith("TODO") or "cell_type" not in current:
+                # cluster_cfg.get(..., cluster): clusters with no pseudobulk_annotation
+                # (e.g. catlas's atac_frag_file clusters) fall through to the existing
+                # "no lab_annotations_with_cl.tsv row found" TODO placeholder below,
+                # keyed on the bare cluster name instead of erroring.
                 cell_type, ontology_id = _resolve_cell_type_and_ontology(
-                    dataset, cluster_cfg["pseudobulk_annotation"], lab_annotations
+                    dataset, cluster_cfg.get("pseudobulk_annotation", cluster), lab_annotations
                 )
             else:
                 cell_type, ontology_id = current["cell_type"], current["ontology_id"]
