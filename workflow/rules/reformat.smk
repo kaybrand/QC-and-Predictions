@@ -95,9 +95,9 @@ def get_reformat_output_files():
             threshold = get_model_threshold(config["scE2G_dir"], model)
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}.e2g.tsv.gz"))
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.e2g.tsv.gz"))
-        if "multiome_powerlaw_v3" in models:
+        if "scATAC_powerlaw_v3" in models:
             for meta in ["element", "gene"]:
-                files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_multiome_v3_{meta}_list.tsv.gz"))
+                files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_{meta}_list.tsv.gz"))
     return files
 
 
@@ -169,21 +169,24 @@ rule reformat_predictions_thresholded:
 
 
 rule reformat_lists:
+    """CATlas-predictions is scATAC-only (never multiome -- that's the separate
+    igvf-portal-submission branch/worktree), so this rule targets
+    scATAC_powerlaw_v3 directly rather than being genericized over {model}."""
     input:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "multiome_powerlaw_v3", "scE2G_{meta}_list.tsv.gz"),
+        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "scATAC_powerlaw_v3", "scE2G_{meta}_list.tsv.gz"),
     output:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_multiome_v3_{meta}_list.tsv.gz"),
+        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_{meta}_list.tsv.gz"),
     params:
-        model="multiome_powerlaw_v3",
+        model="scATAC_powerlaw_v3",
         version=config["scE2G_version"],
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
-        # reformat_lists only ever runs against multiome_powerlaw_v3 (see input: above) --
+        # reformat_lists only ever runs against scATAC_powerlaw_v3 (see input: above) --
         # "elements"/"genes" is Prediction Tabular Files' own variant naming (plural),
         # not the {meta} wildcard's singular "element"/"gene".
         portal_link=lambda wildcards: portal_link_alias(
-            wildcards.dataset, wildcards.cluster, "multiome_powerlaw_v3",
+            wildcards.dataset, wildcards.cluster, "scATAC_powerlaw_v3",
             "elements" if wildcards.meta == "element" else "genes",
         ),
     conda:
