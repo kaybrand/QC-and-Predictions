@@ -1,0 +1,177 @@
+#!/bin/bash
+#SBATCH --job-name=catlas_download
+#SBATCH --partition=engreitz
+#SBATCH --time=1-00:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=8G
+#SBATCH --output=slurm_logs/catlas_download_%j.out
+#SBATCH --error=slurm_logs/catlas_download_%j.err
+#
+# Download the CATlas (Yang Li lab) human pseudobulk ATAC fragment files from the
+# IGVF Data Portal to $SCRATCH.
+#
+# TEMPLATE -- copy this somewhere of your own and set the two paths below.
+#
+#     mkdir -p resources slurm_logs
+#     cp workflow/sbatch/download_catlas_pseudobulks.sbatch.example \
+#        resources/download_catlas_pseudobulks.sbatch
+#     # edit REPO and FORGE
+#     sbatch resources/download_catlas_pseudobulks.sbatch --dry-run   # do this first
+#     sbatch resources/download_catlas_pseudobulks.sbatch
+#
+# It lives here, tracked, because `resources/` is gitignored in its entirety --
+# same reasoning as run_pipeline.sbatch.example next to it.
+#
+# USAGE
+#     sbatch <this> [extra download_portal_pseudobulks.py args...]
+#
+#     sbatch <this>                        # the real thing: 258 human sets
+#     sbatch <this> --dry-run              # discover + update ledger, transfer nothing
+#     sbatch <this> --species human,mouse  # all 627 (1.3 TiB) -- see WHY HUMAN ONLY
+#     sbatch <this> --max-workers 8        # more concurrency
+#
+# WHAT THIS FETCHES
+#     --family catlas --species human  ->  258 PseudobulkSets, one `fragments`
+#     file each, ~0.76 TiB. Largest single file is 52.55 GiB.
+#
+#     257, not 258, is the number to expect on disk. One of the 258 human
+#     fragments files is `upload_status: invalidated` on the portal -- the
+#     portal's own checkfiles rejected it -- so its bytes are not expected to be
+#     usable:
+#         supercluster-Bergmann_glia  (set IGVFDS8504BESL, file IGVFFI7046TQCC)
+#     It is still ATTEMPTED, deliberately: "invalidated" is a metadata verdict,
+#     not proof the object is unreadable, and the md5 check is what actually
+#     decides. The post-run audit below distinguishes "only portal-flagged files
+#     failed" (fine, exit 0) from "something else failed" (exit 1), so this one
+#     known-bad file does not make every run look broken.
+#
+# WHY HUMAN ONLY
+#     The 627 CATlas sets are 369 mouse + 258 human. scE2G here is configured
+#     for human hg38 only (CollapsedGeneBound.hg38.*), so the mouse half cannot
+#     be processed yet and downloading it would just occupy 0.54 TiB. Mouse is
+#     deliberately deferred. `--species human,mouse` is available when that
+#     changes; species can never mix within a dataset either way, because the
+#     dataset label is `catlas-{species}`.
+#
+# WHERE IT LANDS
+#     $DOWNLOAD_ROOT/catlas-human/fragments/human-{cluster}_fragments.tsv.gz
+#
+#     On $SCRATCH, never $OAK: this is job data I/O, and $OAK is near quota.
+#     BEWARE THE 90-DAY PURGE -- $SCRATCH deletes files 90 days after their last
+#     content modification, and a resumed run that SKIPS an unchanged file does
+#     NOT refresh that file's timer. A tree that is only ever resumed can age
+#     out from under you.
+#
+# RESUMABILITY is a property of the ledger, not of this job. Every file's
+# outcome is committed as it lands, so a walltime kill, node failure or Ctrl-C is
+# recovered by simply re-submitting this script unchanged: files whose portal
+# md5sum still matches what was recorded are skipped, files upstream has replaced
+# are re-fetched. That is why --time here can be shorter than the worst case.
+#
+# ONE ENVIRONMENT, unlike run_pipeline.sbatch: this job never invokes snakemake,
+# so it needs only igvf_utils_env (igvf_utils for the authenticated Portal GET,
+# plus SQLite >= 3.24 for the ledger's UPSERTs -- many system pythons ship 3.7).
+#
+# CREDENTIALS: igvf_utils reads IGVF_API_KEY / IGVF_SECRET_KEY from the
+# environment, and sbatch forwards the environment by default. Never pass them as
+# arguments and never write them to a file -- this repo is public. The downloader
+# exits 2 with a clear message if they are missing, rather than silently
+# falling back to anonymous access and 403ing on every file.
+
+set -uo pipefail
+
+# ---- SET THESE TWO ---------------------------------------------------------
+REPO=/path/to/your/CATlas_predictions            # this worktree
+FORGE=/path/to/your/miniforge3                   # conda/mamba install root
+# ---------------------------------------------------------------------------
+
+DRIVER_ENV=igvf_utils_env         # igvf_utils + SQLite >= 3.24; no snakemake needed here
+DOWNLOAD_ROOT="${CATLAS_DOWNLOAD_ROOT:-$SCRATCH/CATlas_pseudobulks}"
+
+DRIVER_PY="$FORGE/envs/$DRIVER_ENV/bin/python"
+# This worktree's OWN ledger, never QC_pseudobulks-igvf-portal-submission's.
+# The three worktrees are separate forks with separate submission targets and
+# must not share submission state.
+STATE_DB="$REPO/resources/igvf_metadata_state.db"
+
+[ -d "$REPO" ]      || { echo "REPO is unset or wrong: $REPO" >&2; exit 2; }
+[ -x "$DRIVER_PY" ] || { echo "no interpreter at $DRIVER_PY (check FORGE / DRIVER_ENV)" >&2; exit 2; }
+[ -n "${SCRATCH:-}" ] || { echo "SCRATCH is not set" >&2; exit 2; }
+
+mkdir -p "$DOWNLOAD_ROOT" "$REPO/slurm_logs" || exit 2
+
+cd "$REPO"
+echo "[download_catlas.sbatch] download root: $DOWNLOAD_ROOT"
+echo "[download_catlas.sbatch] ledger:        $STATE_DB"
+df -h "$DOWNLOAD_ROOT" | tail -1
+
+"$DRIVER_PY" workflow/scripts/download_portal_pseudobulks.py \
+    --family catlas \
+    --species human \
+    --download-root "$DOWNLOAD_ROOT" \
+    --state-db "$STATE_DB" \
+    --max-workers 4 \
+    "$@"
+rc=$?
+echo "[download_catlas.sbatch] downloader exit=$rc (0 = all clean; 1 = something did not complete; 2 = config/credentials)"
+
+# ---- post-run audit --------------------------------------------------------
+# Skipped for a dry run, where nothing has been transferred and every row is
+# legitimately still 'pending' -- auditing that would report the whole batch as
+# missing and bury the dry run's own output in a false alarm.
+case " $* " in
+    *" --dry-run "*)
+        echo "[download_catlas.sbatch] --dry-run: skipping the post-run ledger audit"
+        exit $rc
+        ;;
+esac
+
+# The downloader returns 1 if ANY file failed, which would include the one known
+# portal-invalidated human file on every single run. Re-derive the verdict from
+# the ledger instead, keyed on whether a failure was portal-flagged
+# (review_reasons carries "upload_status:...") rather than on a hardcoded
+# accession -- so if upstream fixes that file, this starts expecting it to
+# succeed with no edit here.
+"$DRIVER_PY" - "$STATE_DB" <<'PYEOF'
+import sqlite3, sys, collections
+db = sys.argv[1]
+c = sqlite3.connect(db)
+rows = c.execute(
+    "SELECT accession, annotation, download_state, review_reasons, last_error "
+    "FROM portal_files WHERE dataset = 'catlas-human'"
+).fetchall()
+if not rows:
+    print("[audit] no catlas-human rows in the ledger -- did discovery run?")
+    sys.exit(1)
+states = collections.Counter(r[2] for r in rows)
+print("[audit] catlas-human rows=%d  states=%s" % (len(rows), dict(states)))
+
+done = [r for r in rows if r[2] == "done"]
+# Three distinct non-done outcomes, kept apart because they need different
+# actions: a portal-flagged file is not our problem to fix, a 'pending' file was
+# simply never reached (walltime/preemption) and just needs a resume, and
+# anything else is a real failure worth reading the error for.
+flagged = [r for r in rows if r[2] != "done" and "upload_status:" in (r[3] or "")]
+pending = [r for r in rows if r[2] == "pending" and r not in flagged]
+failed = [r for r in rows if r[2] not in ("done", "pending") and r not in flagged]
+
+for r in flagged:
+    print("[audit] EXPECTED not-done (portal-flagged %s): %s %s -- %s"
+          % ((r[3] or "").strip(), r[0], r[1], (r[4] or "")[:120]))
+for r in failed:
+    print("[audit] FAILED: %s %s state=%s -- %s" % (r[0], r[1], r[2], (r[4] or "")[:160]))
+if pending:
+    print("[audit] %d file(s) never attempted (walltime/preemption?), e.g. %s"
+          % (len(pending), ", ".join(r[1] for r in pending[:5])))
+
+print("[audit] %d downloaded and md5-verified; %d portal-flagged; %d not attempted; %d failed"
+      % (len(done), len(flagged), len(pending), len(failed)))
+if failed or pending:
+    print("[audit] VERDICT: incomplete -- re-submit this script to retry (it resumes).")
+    sys.exit(1)
+print("[audit] VERDICT: complete. Every non-portal-flagged human pseudobulk is present "
+      "and md5-verified.")
+PYEOF
+audit_rc=$?
+echo "[download_catlas.sbatch] audit exit=$audit_rc"
+exit $audit_rc
