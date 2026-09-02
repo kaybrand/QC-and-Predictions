@@ -47,6 +47,21 @@ def per_cluster_stats_files(dataset):
     return files
 
 
+def prefiltered_metrics_files(dataset):
+    """This run's filtered_cell_subsample_metrics.tsv paths for `dataset`'s
+    atac_frag_file clusters (e.g. catlas) -- declared as an explicit input,
+    same reasoning as per_cluster_stats_files above, so aggregate_qc_stats
+    waits for rule prefiltered_cell_subsample_metrics (prefiltered_fragments.smk)
+    to run first. Without this, that rule's output is never requested by
+    anything in the DAG -- aggregate_qc_stats.py only checks for the file's
+    existence at RUNTIME, which Snakemake can't see as a dependency."""
+    return [
+        os.path.join(config["data_dir"], "plots", dataset, cluster, "filtered_cell_subsample_metrics.tsv")
+        for ds, cluster in INCLUDED_CLUSTERS
+        if ds == dataset and "atac_frag_file" in config["clusters"][ds][cluster]
+    ]
+
+
 def get_qc_stats_targets():
     targets = []
     for dataset in DATASETS:
@@ -123,6 +138,7 @@ rule bgzip_index_bedpe:
 rule aggregate_qc_stats:
     input:
         this_run_stats=lambda wildcards: per_cluster_stats_files(wildcards.dataset),
+        prefiltered_metrics=lambda wildcards: prefiltered_metrics_files(wildcards.dataset),
     params:
         dataset_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}"),
         plots_dir=os.path.join(config["data_dir"], "plots", "{dataset}"),

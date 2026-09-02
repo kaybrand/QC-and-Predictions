@@ -72,6 +72,7 @@ for _scE2G_module_file in SCE2G_MODULE_FILES:
 
 
 include: "rules/filter_pseudobulks.smk"
+include: "rules/prefiltered_fragments.smk"
 include: "rules/reformat.smk"
 include: "rules/candidates_features.smk"
 include: "rules/synapse_manifest.smk"
