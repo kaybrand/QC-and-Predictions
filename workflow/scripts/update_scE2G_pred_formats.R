@@ -156,6 +156,12 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
   # RNA_meanLogNorm/RNA_percentCellsDetected are dropped (2026-07-24): those come
   # from an RNA modality that scATAC-only runs don't have, and scE2G doesn't
   # populate them here unless Multiome was also run for this cluster.
+  # normalizedATAC_enh is NOT selected here (unlike Multiome's equivalent
+  # branch below, which does have it): scATAC_powerlaw_v3's own predictions
+  # table only ever has normalizedATAC_prom -- confirmed no
+  # normalizedATAC_enh column exists in real scATAC_powerlaw_v3 output
+  # (2026-08-13) -- enhancer-level ATAC normalization isn't a feature this
+  # model computes, unlike Multiome's DHS-based features.
   pred <- pred %>%
     select(ElementChr = chr,
            ElementStart = start,
@@ -174,8 +180,7 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
            feature.ubiqExpressed = ubiqExpressed,
            feature.numCandidateEnhGene = numCandidateEnhGene,
            feature.ABC.Score = ABC.Score,
-           isSelfPromoter,
-           normalizedATAC_enh)
+           isSelfPromoter)
 } else if (grepl("ATAC", opt$method)) { # scATAC thresholded predictions -- unchanged narrow column set
     pred <- pred %>%
     mutate(ElementChr = chr,
