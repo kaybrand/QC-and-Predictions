@@ -101,7 +101,7 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
 
 def compute_cluster_stats(
     datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna,
-    prefiltered=False,
+    prefiltered=False, prefiltered_metrics_path=None,
 ):
     """
     Returns (stats, reason). stats is a dict {cell_count, fragments_total,
@@ -122,6 +122,10 @@ def compute_cluster_stats(
           plot_per_cell_qc.R metrics file exists, so derive depth from the
           UNFILTERED datatable joined against the guide's barcodes.
 
+    prefiltered_metrics_path is a THIRD, separate source, and it takes
+    precedence over both branches above: see its own comment in the body for
+    why it is not the same thing as `prefiltered` despite the shared word.
+
     This used to be implicit: `if guide has the default name AND a metrics file
     exists -> metrics, else -> datatable join`. That silently substituted
     unfiltered-derived numbers whenever the metrics file was merely missing,
@@ -135,14 +139,30 @@ def compute_cluster_stats(
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
     """
-    # The metrics file plot_per_cell_qc.R writes always sits alongside the QC
-    # guide it was derived from -- so read it from qc_guide_path's own directory
-    # rather than reconstructing a path from data_dir. This lets a cluster's
-    # qc_guide be overridden (e.g. --qc-guide-dir) without a second, independent
-    # path needing to agree with it.
-    metrics_path = os.path.join(os.path.dirname(qc_guide_path), "filtered_cell_subsample_metrics.tsv")
-
-    if not prefiltered:
+    if prefiltered_metrics_path is not None:
+        # This cluster's ATAC fragments arrived already filtered/QC'd (an
+        # `atac_frag_file` marker in place of pseudobulk_annotation/qc_guide --
+        # e.g. catlas's WashU pseudobulks, pulled pre-filtered straight from the
+        # IGVF Data Portal). It has NO qc_guide and NO per-cell QC table, so
+        # neither branch below can run at all; rule
+        # prefiltered_cell_subsample_metrics (prefiltered_fragments.smk) supplies
+        # the one file the QC-guide flow would otherwise have produced.
+        #
+        # NOT the same thing as `prefiltered` above, despite the name: that flag
+        # means "barcodes were filtered upstream but a qc_guide still exists, so
+        # derive depth from the unfiltered datatable joined against it". Here
+        # there is no guide to join against, which is why this is a third branch
+        # and not another value of that flag.
+        if not os.path.exists(prefiltered_metrics_path):
+            return None, "missing_metrics"
+        cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(prefiltered_metrics_path)
+    elif not prefiltered:
+        # The metrics file plot_per_cell_qc.R writes always sits alongside the QC
+        # guide it was derived from -- so read it from qc_guide_path's own directory
+        # rather than reconstructing a path from data_dir. This lets a cluster's
+        # qc_guide be overridden (e.g. --qc-guide-dir) without a second, independent
+        # path needing to agree with it.
+        metrics_path = os.path.join(os.path.dirname(qc_guide_path), "filtered_cell_subsample_metrics.tsv")
         if not os.path.exists(metrics_path):
             # Deliberately NOT falling back to the unfiltered datatable. For a
             # merged cluster this is expected -- plot_per_cell_qc.R never runs
@@ -228,10 +248,22 @@ def resolve_exclusions(config, data_dir):
         key = (dataset, cluster)
         all_clusters.add(key)
         has_rna = cluster_cfg["models"] != ["scATAC_powerlaw_v3"]
+        # A cluster whose fragments arrived already filtered carries an
+        # `atac_frag_file` marker INSTEAD of pseudobulk_annotation/qc_guide, so
+        # both of those keys are absent -- hence .get() below, and hence the
+        # separate metrics path handed to compute_cluster_stats. Written by rule
+        # prefiltered_cell_subsample_metrics (prefiltered_fragments.smk); this
+        # path and that rule's output must stay in agreement.
+        prefiltered_metrics_path = None
+        if "atac_frag_file" in cluster_cfg:
+            prefiltered_metrics_path = os.path.join(
+                data_dir, "plots", dataset, cluster, "filtered_cell_subsample_metrics.tsv",
+            )
         stats, stat_reason = compute_cluster_stats(
             datatables_dir, dataset, cluster,
-            cluster_cfg["pseudobulk_annotation"], cluster_cfg["qc_guide"], has_rna,
+            cluster_cfg.get("pseudobulk_annotation"), cluster_cfg.get("qc_guide"), has_rna,
             prefiltered=bool(cluster_cfg.get("prefiltered", False)),
+            prefiltered_metrics_path=prefiltered_metrics_path,
         )
 
         if key in user_specified:
