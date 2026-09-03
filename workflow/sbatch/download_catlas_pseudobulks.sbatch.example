@@ -147,30 +147,39 @@ states = collections.Counter(r[2] for r in rows)
 print("[audit] catlas-human rows=%d  states=%s" % (len(rows), dict(states)))
 
 done = [r for r in rows if r[2] == "done"]
-# Three distinct non-done outcomes, kept apart because they need different
-# actions: a portal-flagged file is not our problem to fix, a 'pending' file was
-# simply never reached (walltime/preemption) and just needs a resume, and
-# anything else is a real failure worth reading the error for.
-flagged = [r for r in rows if r[2] != "done" and "upload_status:" in (r[3] or "")]
-pending = [r for r in rows if r[2] == "pending" and r not in flagged]
-failed = [r for r in rows if r[2] not in ("done", "pending") and r not in flagged]
+# Portal-flagged is reported REGARDLESS of download outcome. An earlier version
+# only counted flagged files among the NOT-done rows, which silently hid the
+# real case: an "invalidated" file's S3 object still exists and its bytes still
+# match its md5, so it downloads cleanly and lands in 'done'. That run printed
+# "0 portal-flagged" while a flagged duplicate sat on disk -- and a
+# content-duplicate that reaches config generation becomes a duplicate
+# prediction set. It has to stay visible after a fully successful run.
+flagged = [r for r in rows if "upload_status:" in (r[3] or "")]
+pending = [r for r in rows if r[2] == "pending"]
+failed = [r for r in rows if r[2] not in ("done", "pending")]
 
 for r in flagged:
-    print("[audit] EXPECTED not-done (portal-flagged %s): %s %s -- %s"
-          % ((r[3] or "").strip(), r[0], r[1], (r[4] or "")[:120]))
+    print("[audit] PORTAL-FLAGGED (%s), download_state=%s: %s %s"
+          % ((r[3] or "").strip(), r[2], r[0], r[1]))
+if flagged:
+    print("[audit] ^ these are ON DISK if download_state=done. The Portal rejected them")
+    print("[audit]   (content_md5sum duplicates), so they must be EXCLUDED at config")
+    print("[audit]   generation or they become duplicate prediction sets.")
 for r in failed:
     print("[audit] FAILED: %s %s state=%s -- %s" % (r[0], r[1], r[2], (r[4] or "")[:160]))
 if pending:
     print("[audit] %d file(s) never attempted (walltime/preemption?), e.g. %s"
           % (len(pending), ", ".join(r[1] for r in pending[:5])))
 
-print("[audit] %d downloaded and md5-verified; %d portal-flagged; %d not attempted; %d failed"
+print("[audit] %d downloaded and md5-verified; %d portal-flagged (of any state); "
+      "%d not attempted; %d failed"
       % (len(done), len(flagged), len(pending), len(failed)))
 if failed or pending:
     print("[audit] VERDICT: incomplete -- re-submit this script to retry (it resumes).")
     sys.exit(1)
-print("[audit] VERDICT: complete. Every non-portal-flagged human pseudobulk is present "
-      "and md5-verified.")
+usable = len(done) - len([r for r in flagged if r[2] == "done"])
+print("[audit] VERDICT: complete. %d of %d file(s) are usable inputs; the rest are "
+      "portal-flagged duplicates listed above." % (usable, len(rows)))
 PYEOF
 audit_rc=$?
 echo "[download_catlas.sbatch] audit exit=$audit_rc"

@@ -109,8 +109,15 @@ if (!is.null(opt$threshold)) {
   header <- c(header, paste("# ScoreThreshold:", opt$threshold))
 }
 
-# add ScoreType if these are predictions (not metadata List)
-if (!grepl("_list", opt$input_file)) {
+# add ScoreType if these are predictions (not metadata List).
+#
+# --genes_from_predictions has to be excluded explicitly: its INPUT is a
+# predictions file, so the filename test alone passes and the output gained a
+# "# ScoreType: positive_score" line that the Multiome genes file does not have
+# and the gene_quantifications format spec does not define. Same filename-
+# sniffing trap that made --genes_from_predictions a flag rather than another
+# name pattern -- the input's name does not determine the OUTPUT's kind.
+if (!grepl("_list", opt$input_file) && !opt$genes_from_predictions) {
   header <- c(header, "# ScoreType: positive_score")
 }
 
