@@ -166,6 +166,13 @@ def parse_args(argv=None):
                    help="ledger dataset label AND the config's dataset key (default catlas-human)")
     p.add_argument("--out", required=True)
     p.add_argument(
+        "--clusters", default=None,
+        help="comma-separated cluster names to restrict to, for a small rehearsal config. The "
+             "dataset KEY is unchanged, so a test config writes into the same results tree as the "
+             "full one and its outputs carry forward instead of being thrown away. Every name must "
+             "exist in the ledger; a typo is an error, not a silently smaller batch.",
+    )
+    p.add_argument(
         "--download-root", default=None,
         help="where the CATlas fragments live; written into the config as `download_root`, which "
              "is what download_portal_pseudobulks.py --pipeline-config then reads to decide where "
@@ -241,6 +248,22 @@ def main(argv=None):
             f"no usable clusters for dataset {args.dataset!r} in {args.state_db}. "
             "Has the download run? (download_portal_pseudobulks.py --family catlas)"
         )
+
+    if args.clusters:
+        wanted = [c.strip() for c in args.clusters.split(",") if c.strip()]
+        available = {c for c, _p in clusters}
+        missing = [c for c in wanted if c not in available]
+        if missing:
+            # Loud, because a silently-smaller rehearsal batch would still LOOK
+            # like it passed while never touching the cluster you meant to test.
+            raise SystemExit(
+                f"--clusters names {len(missing)} cluster(s) not usable in the ledger for "
+                f"{args.dataset!r}: {missing}. They may be misspelled, not downloaded, or "
+                "portal-rejected (see the skip list above)."
+            )
+        order = {c: i for i, c in enumerate(wanted)}
+        clusters = sorted((c for c in clusters if c[0] in order), key=lambda cp: order[cp[0]])
+        log(f"--clusters restricted the batch to {len(clusters)}: {[c for c, _ in clusters]}")
 
     log(f"{len(clusters)} cluster(s) from the ledger; {len(skipped)} skipped")
     for name, accession, why in skipped:
