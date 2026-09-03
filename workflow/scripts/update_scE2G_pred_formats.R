@@ -37,6 +37,17 @@ option_list = list(
                            "scE2G_gene_list file. Yields only genes actually scored (those with",
                            "considered_for_predictions=TRUE), not the full annotation. Requires",
                            "--strand_annotation, because no scE2G_predictions file carries strand")),
+  # Was a hardcoded "10x Multiome" literal in the header block below, emitted on
+  # EVERY file this script writes -- so scATAC outputs claimed the wrong assay
+  # (including ones already uploaded to the Portal). Now a parameter, defaulting
+  # to the old literal so Multiome output is byte-identical and nothing on the
+  # igvf-portal-submission fork changes.
+  #
+  # For CATlas pass "snATAC-seq": that is preferred_assay_titles on all 627
+  # yang-li CATlas PseudobulkSets, with zero variation across either species
+  # (verified live 2026-09-02; assay_titles is the longer "single-cell ATAC-seq").
+  make_option(c("--assays"), type = "character", default = "10x Multiome",
+              help = "Value for the '# Assays:' header line", metavar = "character"),
   make_option(c("--strand_annotation"), type = "character", default = NULL,
               help = paste("processed_genes_file.bed, supplying GeneStrand for",
                            "--genes_from_predictions. Columns: chr/start/end/symbol/score/strand/",
@@ -86,7 +97,7 @@ header <- c(
   paste("# Version:", opt$version),
   "# GenomeReference: IGVFDS0280IQAI",
   "# URL: https://github.com/EngreitzLab/scE2G/tree/main",
-  "# Assays: 10x Multiome",
+  paste("# Assays:", opt$assays),
   "# SampleAgnostic: False",
   paste("# SampleTermName:", opt$cell_type),
   paste("# SampleTermID:", opt$term_id),

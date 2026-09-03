@@ -59,6 +59,17 @@ from igvf_metadata.tables.prediction_tabular_files import build_alias as _ptf_bu
 
 IGVF_CFG = IgvfConfig.from_dict(config.get("igvf", {}))
 
+# The "# Assays:" header line in every reformatted file. Defaults to the literal
+# update_scE2G_pred_formats.R hardcoded before it became a parameter, so an
+# unconfigured dataset produces byte-identical output to before.
+#
+# CATlas sets this to "snATAC-seq" -- preferred_assay_titles on all 627 yang-li
+# CATlas PseudobulkSets, unanimous across both species (verified 2026-09-02).
+# Config-driven rather than branched on model, because the assay is a property of
+# how the DATA was generated, which the pipeline cannot infer from the scE2G
+# model it happened to run.
+ASSAY_TITLE = config.get("assay_title", "10x Multiome")
+
 
 def portal_cell_metadata(dataset, cluster):
     """{"cell_annotation":..., "cl_id":..., "term_id":..., "term_name":...,
@@ -149,6 +160,7 @@ rule reformat_predictions:
     params:
         model="{model}",
         version=config["scE2G_version"],
+        assays=ASSAY_TITLE,
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
@@ -160,6 +172,7 @@ rule reformat_predictions:
     shell:
         """
         Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
+        --assays "{params.assays}" \
         -i {input} \
         -o {output} \
         -c "{params.name}" \
@@ -182,6 +195,7 @@ rule reformat_predictions_thresholded:
     params:
         model="{model}",
         version=config["scE2G_version"],
+        assays=ASSAY_TITLE,
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
@@ -196,6 +210,7 @@ rule reformat_predictions_thresholded:
     shell:
         """
         Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
+        --assays "{params.assays}" \
         -i {input} \
         -o {output} \
         -c "{params.name}" \
@@ -216,6 +231,7 @@ rule reformat_gene_list:
     params:
         model="multiome_powerlaw_v3",
         version=config["scE2G_version"],
+        assays=ASSAY_TITLE,
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
@@ -230,6 +246,7 @@ rule reformat_gene_list:
     shell:
         """
         Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
+        --assays "{params.assays}" \
         -i {input} \
         -o {output} \
         -c "{params.name}" \
@@ -278,6 +295,7 @@ rule reformat_gene_list_from_predictions:
     params:
         model="scATAC_powerlaw_v3",
         version=config["scE2G_version"],
+        assays=ASSAY_TITLE,
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
@@ -292,6 +310,7 @@ rule reformat_gene_list_from_predictions:
     shell:
         """
         Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
+        --assays "{params.assays}" \
         --genes_from_predictions \
         -i {input.predictions} \
         --strand_annotation {input.strand_annotation} \
@@ -352,6 +371,7 @@ rule reformat_element_list:
         temp(os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_element_list.bed")),
     params:
         version=config["scE2G_version"],
+        assays=ASSAY_TITLE,
         name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
         term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
         summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
@@ -375,7 +395,7 @@ rule reformat_element_list:
             echo "# Version: {params.version}"
             echo "# GenomeReference: IGVFDS0280IQAI"
             echo "# URL: https://github.com/EngreitzLab/scE2G/tree/main"
-            echo "# Assays: 10x Multiome"
+            echo "# Assays: {params.assays}"
             echo "# SampleAgnostic: False"
             echo "# SampleTermName: {params.name}"
             echo "# SampleTermID: {params.term_id}"
