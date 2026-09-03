@@ -52,6 +52,45 @@ output_dir: ./results
 pseudobulks_root: /scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026
 scE2G_version: "1.2"
 
+# The "# Assays:" header line written into every reformatted file
+# (reformat.smk's ASSAY_TITLE -> update_scE2G_pred_formats.R --assays).
+#
+# OPTIONAL. Omit it and you get "10x Multiome", the literal that used to be
+# hardcoded in the R script -- correct for the Multiome datasets, and wrong for
+# anything else, which is why this key exists.
+#
+# DO NOT GUESS THIS VALUE. Take it from the Portal, from the very pseudobulks
+# this dataset is built on: `preferred_assay_titles` on their PseudobulkSet
+# records. It must be a single value across the whole dataset -- if a dataset's
+# pseudobulks disagree, this one header line cannot describe them and the
+# dataset needs splitting, exactly as catlas is split by species.
+#
+#   python - <<'PY'
+#   import urllib.parse, requests, collections
+#   import igvf_utils as iu, igvf_utils.utils as iuu
+#   from igvf_utils.connection import Connection
+#   conn = Connection(igvf_mode="prod", no_log_file=True)
+#   params = [("type","PseudobulkSet"),("status!","deleted"),("limit","all"),
+#             ("lab.@id","/labs/yang-li/"),("field","preferred_assay_titles")]
+#   url = iuu.url_join([conn.igvf_mode.url,"multireport/?"]) + urllib.parse.urlencode(params)
+#   rows = requests.get(url, auth=conn.auth, timeout=iu.TIMEOUT,
+#                       headers=iuu.REQUEST_HEADERS_JSON).json()["@graph"]
+#   print(collections.Counter(tuple(r.get("preferred_assay_titles") or []) for r in rows))
+#   PY
+#
+# For catlas (lab /labs/yang-li/) that returns snATAC-seq for all 627 sets, one
+# distinct value, unanimous across both species -- verified 2026-09-02. Note
+# `assay_titles` on the same records is the longer "single-cell ATAC-seq";
+# `preferred_assay_titles` is the one to use.
+#
+# Caveat worth knowing before reusing this for a gene list: the
+# gene_quantifications file format specification defines "# Assays" as the
+# assays used to DEFINE TSS COORDINATES, "not required if no additional
+# molecular data was used to define TSSs". scE2G's TSSs come from the GENCODE
+# annotation, not from the assay, so on a genes file this value arguably
+# overstates things. It is unambiguously right for predictions and element files.
+# assay_title: snATAC-seq
+
 # Which stages this run performs. Overridable per-invocation with
 # `--config pipeline_mode=local_only` (top-level for exactly that reason).
 #
