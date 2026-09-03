@@ -78,7 +78,19 @@ rule rna_count_matrix:
         pseudobulks=lambda wildcards: pseudobulks_dir(wildcards.dataset),
         cell_type=cluster_pseudobulk_annotation,
         rna_out=os.path.join(OUT_DIR_BASE, "{dataset}", "{cluster}", "rna_count_matrix_{dataset}_{cluster}.mtx"),
-        gtf=config["gtf"],
+        # lambda, not a plain config["gtf"], so the key is only read when this
+        # rule actually runs. As a plain subscript it was evaluated when the rule
+        # was DEFINED -- and this file is included unconditionally by
+        # workflow/Snakefile -- so every config had to set `gtf` even when no
+        # rule here could ever be instantiated. That is the case for any
+        # ATAC-only dataset: MULTIOME_CLUSTERS above is empty when every cluster
+        # is models: [scATAC_powerlaw_v3], so rna_count_matrix never runs, yet
+        # the config was still forced to name a GTF that would never be opened.
+        #
+        # This is the only parse-time config read in this file; every other
+        # access is either config["clusters"] (always present) or inside a lazy
+        # input function.
+        gtf=lambda wildcards: config["gtf"],
     log:
         os.path.join(OUT_DIR_BASE, "{dataset}", "logs", "{cluster}_gtf_mapping.txt"),
     conda:

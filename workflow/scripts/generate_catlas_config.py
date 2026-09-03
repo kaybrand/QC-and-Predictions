@@ -51,11 +51,18 @@ TEMPLATE_HEADER = '''\
 # workflow/config/example_pipeline_config.yaml for the general schema.
 {skipped_note}
 scE2G_dir: {sce2g_dir}
-gtf: {gtf}
 
-# hg38 ONLY. This is why mouse is out of scope: 369 of the 627 CATlas
-# pseudobulks are Mus musculus and cannot be run against these annotations.
-# A catlas-mouse dataset needs its own build before it can be generated.
+# hg38 ONLY (via scE2G_options.gene_TSS500/genes below). This is why mouse is
+# out of scope: 369 of the 627 CATlas pseudobulks are Mus musculus and cannot be
+# run against these annotations. A catlas-mouse dataset needs its own build.
+#
+# NO `gtf` KEY, deliberately. It is read only by filter_pseudobulks.smk's
+# rna_count_matrix rule, for Ensembl-ID -> gene-symbol conversion on an RNA count
+# matrix. That rule is gated on MULTIOME_CLUSTERS, which is empty for any dataset
+# whose every cluster is models: [scATAC_powerlaw_v3] -- so it can never run here
+# and the GTF would never be opened. (Note the ACCESSION IGVFFI9573KOZR is still
+# cited in this dataset's manifests as a reference_files value, but that comes
+# from constants in igvf_metadata/tables/, not from this config.)
 
 # CATlas has no QC-guide step, so none of the QC-guide inputs data_dir normally
 # supplies (plots/, datatables/, multiome_data/) exist or are read for this
@@ -175,8 +182,6 @@ def parse_args(argv=None):
     p.add_argument("--scE2G-version", default="1.2")
     p.add_argument("--scE2G-dir",
                    default="/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G")
-    p.add_argument("--gtf", default="/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/"
-                                   "uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz")
     return p.parse_args(argv)
 
 
@@ -298,7 +303,6 @@ def main(argv=None):
         state_db_rel=args.state_db,
         out_rel=args.out,
         sce2g_dir=args.scE2G_dir,
-        gtf=args.gtf,
         data_dir=os.path.join(repo, "data"),
         download_root=download_root,
         output_dir=os.path.join(repo, "results"),
