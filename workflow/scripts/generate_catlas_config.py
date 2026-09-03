@@ -102,6 +102,17 @@ assay_title: snATAC-seq
 
 scE2G_version: "{sce2g_version}"
 
+# The conda env cache Snakemake must reuse. run_pipeline.py reads this key
+# (falling back to its own DEFAULT_CONDA_PREFIX) and hard-refuses to run if the
+# directory is absent -- Snakemake must NEVER be left to build envs itself: a
+# fresh prefix reads as "every env needs building from scratch", and concurrent
+# runs then race and corrupt each other's downloads.
+#
+# Stated here rather than left to that default so this dataset names its own
+# prefix explicitly, instead of depending on a hardcoded path in a script shared
+# with the other worktrees.
+snakemake_conda_prefix: {conda_prefix}
+
 # {pipeline_mode_note}
 pipeline_mode: {pipeline_mode}
 
@@ -186,6 +197,12 @@ def parse_args(argv=None):
     p.add_argument("--min-cell-count", type=int, default=100)
     p.add_argument("--min-fragments-total", type=int, default=2_000_000)
     p.add_argument("--max-cell-count", type=int, default=20000)
+    p.add_argument(
+        "--conda-prefix",
+        default="/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/.snakemake/conda",
+        help="written into the config as snakemake_conda_prefix. Must be an ALREADY-POPULATED env "
+             "cache; Snakemake is never allowed to build envs itself.",
+    )
     p.add_argument("--scE2G-version", default="1.2")
     p.add_argument("--scE2G-dir",
                    default="/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G")
@@ -330,6 +347,7 @@ def main(argv=None):
         download_root=download_root,
         output_dir=os.path.join(repo, "results"),
         sce2g_version=args.scE2G_version,
+        conda_prefix=args.conda_prefix,
         pipeline_mode=args.pipeline_mode,
         pipeline_mode_note=mode_note,
         max_cell_count=args.max_cell_count,
