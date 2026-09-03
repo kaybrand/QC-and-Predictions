@@ -446,9 +446,34 @@ SCE2G_MODULE_FILES = []
 # ABC_BIOSAMPLES path without assuming these two lists stay in lockstep --
 # see that loop's own comment for why it needs this at all.
 SCE2G_MODULE_FILE_DATASETS = {}
+_SCE2G_MODULE_TOKENS = {}
 for _dataset in DATASETS if SCE2G_MODULES_ENABLED else []:
-    _module_name = f"scE2G_{_dataset}"
-    _rule_prefix = f"sce2g_{_dataset}"
+    # Snakemake's `module NAME:` and `as PREFIX_*` grammar needs a PYTHON
+    # IDENTIFIER, so any character that can't appear in one has to be folded to
+    # "_" here. Every dataset up to now was igvf0..igvf18 and needed no folding;
+    # `catlas-human` is the first with a hyphen, and it failed at parse with
+    # "SyntaxError: Expected name or colon after module keyword" pointing at
+    # line 1 of the generated file -- with the real message buried under a
+    # KeyError in Snakemake 9.16.3's own exception formatter.
+    #
+    # Only the module/rule-prefix IDENTIFIERS are folded. The dataset LABEL is
+    # untouched everywhere it is data rather than syntax -- SCE2G_CONFIGS keys,
+    # paths, aliases, filenames -- because that label is `catlas-human` by
+    # deliberate choice and must not silently become `catlas_human`.
+    _module_token = re.sub(r"\W", "_", _dataset)
+    if _module_token in _SCE2G_MODULE_TOKENS:
+        # e.g. a config holding both "catlas-human" and "catlas_human". They
+        # would generate the same module name and the same generated .smk path,
+        # so the second would overwrite the first and its rules would silently
+        # run against the wrong dataset's config.
+        raise ValueError(
+            f"datasets {_SCE2G_MODULE_TOKENS[_module_token]!r} and {_dataset!r} both fold to the "
+            f"scE2G module identifier {_module_token!r}. Rename one: they differ only in "
+            "characters that are not valid in a Python identifier."
+        )
+    _SCE2G_MODULE_TOKENS[_module_token] = _dataset
+    _module_name = f"scE2G_{_module_token}"
+    _rule_prefix = f"sce2g_{_module_token}"
     _generated_path = os.path.join(GENERATED_RULES_DIR, f"{_module_name}.smk")
     with open(_generated_path, "w") as f:
         f.write(
