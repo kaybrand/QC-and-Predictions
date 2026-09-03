@@ -29,7 +29,27 @@ DEFAULT_QC_GUIDE_NAME = "filtered_barcodes_with_subsamples.tsv.gz"
 # Exclusion reasons that mean "this cluster's INPUTS don't exist," as opposed to
 # "this cluster's data is too shallow." Only the latter can be un-excluded by
 # predictions_on_everything_but_do_not_upload -- see resolve_exclusions().
+# Reasons that mean "this cluster cannot be processed at all", because the
+# missing thing is an INPUT the pipeline has no rule to produce. These survive
+# `predictions_on_everything_but_do_not_upload`, since including such a cluster
+# would just fail the DAG with MissingInputException.
+#
+# PENDING_PREFILTERED_METRICS is deliberately NOT in here. For an
+# `atac_frag_file` cluster the metrics file is one of OUR OWN outputs (rule
+# prefiltered_cell_subsample_metrics), not an external input -- so its absence
+# on a first parse is a bootstrap state, not an unprocessable one. Lumping it in
+# with the three below deadlocked the whole dataset: no stats -> excluded ->
+# excluded for an "unprocessable" reason -> not in INCLUDED_CLUSTERS -> the rule
+# that would produce the stats is never scheduled -> no stats, forever.
+# Confirmed against the real 257-cluster catlas-human config: INCLUDED went 0/257,
+# every cluster reporting missing_metrics.
 UNPROCESSABLE_REASONS = frozenset({"missing_qc_guide", "missing_metrics", "missing_per_cell_qc_table"})
+
+# A cluster whose stats simply have not been computed yet. Processable: run it,
+# which produces the metrics, and the quality gate applies from the next parse
+# on. Never upload-eligible in the meantime -- upload_eligible_clusters excludes
+# everything in excluded_clusters regardless of reason.
+PENDING_PREFILTERED_METRICS = "pending_prefiltered_metrics"
 
 # Renamed 2026-08-24. The old name described the mechanism ("process the excluded
 # ones, don't upload"); the new one states the intent. Old key still accepted so
@@ -154,7 +174,10 @@ def compute_cluster_stats(
         # there is no guide to join against, which is why this is a third branch
         # and not another value of that flag.
         if not os.path.exists(prefiltered_metrics_path):
-            return None, "missing_metrics"
+            # NOT "missing_metrics": that reason is unprocessable, and this file
+            # is our own output, so reporting it as a missing input deadlocks the
+            # dataset (see UNPROCESSABLE_REASONS). Bootstrap state instead.
+            return None, PENDING_PREFILTERED_METRICS
         cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(prefiltered_metrics_path)
     elif not prefiltered:
         # The metrics file plot_per_cell_qc.R writes always sits alongside the QC

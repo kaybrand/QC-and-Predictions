@@ -177,6 +177,13 @@ def derive_status(exclusion_reason, quality_pass, has_annotation, has_prediction
     # merge_cluster_metrics.py, not by relaxing the gate.
     if exclusion_reason in ("missing_qc_guide", "missing_metrics", "missing_per_cell_qc_table"):
         return "missing-qc-guide"
+    # An atac_frag_file cluster whose stats have not been computed yet (the
+    # metrics file is this pipeline's own output -- see resolve_exclusions'
+    # PENDING_PREFILTERED_METRICS). Its own status, because falling through to
+    # "excluded-quality" below would report a cluster that has never been
+    # MEASURED as one that FAILED, which is a different and much worse claim.
+    if exclusion_reason == "pending_prefiltered_metrics":
+        return "pending-metrics-not-yet-computed"
     if not quality_pass:
         return "excluded-quality"
     if not has_predictions:
