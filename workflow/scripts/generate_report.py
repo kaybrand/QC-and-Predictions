@@ -182,7 +182,7 @@ def derive_status(exclusion_reason, quality_pass, has_annotation, has_prediction
     # PENDING_PREFILTERED_METRICS). Its own status, because falling through to
     # "excluded-quality" below would report a cluster that has never been
     # MEASURED as one that FAILED, which is a different and much worse claim.
-    if exclusion_reason == "pending_prefiltered_metrics":
+    if exclusion_reason == "pending_qc_stats":
         return "pending-metrics-not-yet-computed"
     if not quality_pass:
         return "excluded-quality"

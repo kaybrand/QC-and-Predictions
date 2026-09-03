@@ -40,7 +40,7 @@ from write_scE2G_config import (  # noqa: E402
     write_cluster_metadata_table,
     load_cluster_metadata,
 )
-from pipeline_paths import resolve_repo_relative  # noqa: E402
+from pipeline_paths import resolve_repo_relative, results_dir_base  # noqa: E402
 from cell_annotations import annotation_lookup_key  # noqa: E402
 
 # Read-only snapshot of state.db's cell_annotations, written by the driver
@@ -287,7 +287,11 @@ wildcard_constraints:
 # accordingly.
 # ---------------------------------------------------------------------------
 CONFIG_DIR = os.path.join(workflow.basedir, "config")
-RESULTS_DIR_BASE = os.path.join(OUTPUT_DIR, "uniformly_processed")
+# Via pipeline_paths.results_dir_base, the shared formula -- resolve_exclusions.py
+# needs the same path to find a dataset's qc_plots/all_qc_stats.tsv for the
+# quality gate, and a disagreement between the two would fail OPEN (no stats
+# file found -> nothing gated), which is the silent direction.
+RESULTS_DIR_BASE = results_dir_base(config, WDIR)
 
 CELL_CLUSTERS_TABLES = {}
 RESULTS_DIRS = {}

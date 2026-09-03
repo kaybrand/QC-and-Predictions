@@ -57,14 +57,22 @@ gtf: {gtf}
 # pseudobulks are Mus musculus and cannot be run against these annotations.
 # A catlas-mouse dataset needs its own build before it can be generated.
 
-# data_dir is READ-ONLY on this fork (QC-guide plots/datatables inputs). CATlas
-# has no QC-guide step, so in practice only
-# {{data_dir}}/plots/{dataset}/{{cluster}}/filtered_cell_subsample_metrics.tsv
-# is read from here; multiome_data/datatables are never populated.
+# CATlas has no QC-guide step, so none of the QC-guide inputs data_dir normally
+# supplies (plots/, datatables/, multiome_data/) exist or are read for this
+# dataset. The quality gate reads scE2G's own qc_plots/all_qc_stats.tsv under
+# output_dir instead. Still required as a top-level key, and still WRITTEN to:
+# rule prefiltered_cell_subsample_metrics puts its per-cluster intermediate at
+# {{data_dir}}/plots/{dataset}/{{cluster}}/filtered_cell_subsample_metrics.tsv,
+# which aggregate_qc_stats consumes to fill cell_count/fragments_total into
+# all_qc_stats.tsv. That write is why data_dir points inside THIS worktree --
+# it must never be the QC_pseudobulks tree.
 data_dir: {data_dir}
 
-# Never invoked: every cluster sets atac_frag_file, so pseudobulks_dir()/
-# atac_fragment_file are unreachable for this dataset. Required top-level key.
+# The download root this dataset's fragments actually came from
+# (download_portal_pseudobulks.py --family catlas --download-root). Every
+# cluster addresses its file by exact atac_frag_file path, so nothing globs
+# under here -- but pointing it at the real tree keeps the config honest about
+# where the inputs live instead of naming a path that does not exist.
 pseudobulks_root: {pseudobulks_root}
 
 # Replaces the pre-rebase `results_dir_base`, which nothing reads any more --
@@ -106,17 +114,20 @@ exclusion:
   # metrics to judge.
   #
   # It is also what makes the first run work at all: these clusters' stats come
-  # from filtered_cell_subsample_metrics.tsv, which this pipeline's own
-  # prefiltered_cell_subsample_metrics rule produces -- so on a first parse no
-  # cluster has stats yet.
+  # from scE2G's own {{output_dir}}/uniformly_processed/{dataset}/qc_plots/
+  # all_qc_stats.tsv, which does not exist until scE2G has run -- so on a first
+  # parse no cluster has stats and every one reports pending_qc_stats. With this
+  # flag false, nothing would ever be processed and nothing would ever be
+  # measured.
   predictions_on_everything_but_do_not_upload: true
   auto_thresholds:
-    # Same bar as every other dataset in this project. min_umi_count is
-    # irrelevant for ATAC-only clusters (umi_count is None and the comparison
-    # is skipped), kept only so the block matches the shared convention.
+    # Same bar as every other dataset in this project. No min_umi_count: these
+    # clusters are ATAC-only, there is no RNA anywhere in the CATlas pseudobulks,
+    # and resolve_exclusions reports umi_count as None for them so the threshold
+    # would never be compared. Naming it would imply a measurement that does not
+    # exist here.
     min_cell_count: {min_cell_count}
     min_fragments_total: {min_fragments_total}
-    min_umi_count: 1000000
 
 clusters:
   {dataset}:
@@ -208,6 +219,18 @@ def main(argv=None):
             f"{missing[0][1]} -- was $SCRATCH purged? Re-run the downloader (it resumes)."
         )
 
+    # The download root, recovered from the ledger's own local_path values rather
+    # than passed in, so pseudobulks_root can never disagree with where the
+    # fragments actually are. Layout is {root}/{dataset}/fragments/{file} (see
+    # portal_files.catlas_resolve_scope), so the root is three levels up.
+    roots = {os.path.dirname(os.path.dirname(os.path.dirname(p))) for _c, p in clusters}
+    if len(roots) != 1:
+        raise SystemExit(
+            f"ledger local_paths span {len(roots)} download roots ({sorted(roots)}); "
+            "pseudobulks_root can only name one. Re-download into a single tree."
+        )
+    download_root = roots.pop()
+
     mode_note = (
         "local_only: no IGVF Portal contact at any stage, and no reformat targets "
         "(REFORMAT_ELIGIBLE_CLUSTERS is empty by construction). Predictions + QC only."
@@ -231,7 +254,7 @@ def main(argv=None):
         sce2g_dir=args.scE2G_dir,
         gtf=args.gtf,
         data_dir=os.path.join(repo, "data"),
-        pseudobulks_root=f"/scratch/users/{os.environ.get('USER','USER')}/UNUSED_no_pseudobulks_root_for_catlas",
+        pseudobulks_root=download_root,
         output_dir=os.path.join(repo, "results"),
         sce2g_version=args.scE2G_version,
         pipeline_mode=args.pipeline_mode,

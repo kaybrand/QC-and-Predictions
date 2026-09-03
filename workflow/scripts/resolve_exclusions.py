@@ -24,32 +24,31 @@ import gzip
 import os
 import sys
 
+from pipeline_paths import repo_root_from_script, results_dir_base
+
 DEFAULT_QC_GUIDE_NAME = "filtered_barcodes_with_subsamples.tsv.gz"
 
 # Exclusion reasons that mean "this cluster's INPUTS don't exist," as opposed to
 # "this cluster's data is too shallow." Only the latter can be un-excluded by
-# predictions_on_everything_but_do_not_upload -- see resolve_exclusions().
-# Reasons that mean "this cluster cannot be processed at all", because the
-# missing thing is an INPUT the pipeline has no rule to produce. These survive
-# `predictions_on_everything_but_do_not_upload`, since including such a cluster
-# would just fail the DAG with MissingInputException.
+# predictions_on_everything_but_do_not_upload -- see resolve_exclusions(). These
+# three survive that flag, because including such a cluster would just fail the
+# DAG with MissingInputException.
 #
-# PENDING_PREFILTERED_METRICS is deliberately NOT in here. For an
-# `atac_frag_file` cluster the metrics file is one of OUR OWN outputs (rule
-# prefiltered_cell_subsample_metrics), not an external input -- so its absence
-# on a first parse is a bootstrap state, not an unprocessable one. Lumping it in
-# with the three below deadlocked the whole dataset: no stats -> excluded ->
-# excluded for an "unprocessable" reason -> not in INCLUDED_CLUSTERS -> the rule
-# that would produce the stats is never scheduled -> no stats, forever.
-# Confirmed against the real 257-cluster catlas-human config: INCLUDED went 0/257,
-# every cluster reporting missing_metrics.
+# PENDING_QC_STATS is deliberately NOT in here. For an `atac_frag_file` cluster
+# the stats come from scE2G's own qc_plots/all_qc_stats.tsv -- one of OUR OWN
+# outputs, not an external input -- so its absence on a first parse is a
+# bootstrap state, not an unprocessable one. Lumping it in with these three
+# deadlocked the whole dataset: no stats -> excluded -> excluded for an
+# "unprocessable" reason -> not in INCLUDED_CLUSTERS -> the rules that would
+# produce the stats are never scheduled -> no stats, forever. Confirmed against
+# the real 257-cluster catlas-human config: INCLUDED was 0 of 257.
 UNPROCESSABLE_REASONS = frozenset({"missing_qc_guide", "missing_metrics", "missing_per_cell_qc_table"})
 
 # A cluster whose stats simply have not been computed yet. Processable: run it,
-# which produces the metrics, and the quality gate applies from the next parse
-# on. Never upload-eligible in the meantime -- upload_eligible_clusters excludes
+# which produces the stats, and the quality gate applies from the next parse on.
+# Never upload-eligible in the meantime -- upload_eligible_clusters excludes
 # everything in excluded_clusters regardless of reason.
-PENDING_PREFILTERED_METRICS = "pending_prefiltered_metrics"
+PENDING_QC_STATS = "pending_qc_stats"
 
 # Renamed 2026-08-24. The old name described the mechanism ("process the excluded
 # ones, don't upload"); the new one states the intent. Old key still accepted so
@@ -119,9 +118,37 @@ def _stats_from_per_cell_qc_join(qc_guide_path, per_cell_qc_path):
     return cell_count, fragments_total, umi_count
 
 
+def _stats_from_qc_summary(qc_stats_path, cluster):
+    """(cell_count, fragments_total) for `cluster` from scE2G's own
+    {results}/{dataset}/qc_plots/all_qc_stats.tsv, or None if the file does not
+    exist yet or has no row for this cluster.
+
+    None is the BOOTSTRAP answer, not an error: this file is written by
+    aggregate_qc_stats after scE2G has run, so on a first pass it is legitimately
+    absent and every cluster is un-measured. See PENDING_QC_STATS.
+
+    One row per (cluster, model). Multiple models for one cluster report the same
+    cell_count/fragments_total (both are properties of the input fragments, not
+    of the model), so the first matching row is sufficient -- but a row whose
+    counts are blank is treated as absent rather than as zero, since zero is a
+    real value the gate would act on.
+    """
+    if not os.path.exists(qc_stats_path):
+        return None
+    with open(qc_stats_path) as f:
+        for row in csv.DictReader(f, delimiter="\t"):
+            if row.get("cluster") != cluster:
+                continue
+            cell_count, fragments_total = row.get("cell_count"), row.get("fragments_total")
+            if not cell_count or not fragments_total:
+                return None
+            return int(cell_count), int(fragments_total)
+    return None
+
+
 def compute_cluster_stats(
     datatables_dir, dataset, cluster, pseudobulk_annotation, qc_guide_path, has_rna,
-    prefiltered=False, prefiltered_metrics_path=None,
+    prefiltered=False, qc_stats_path=None,
 ):
     """
     Returns (stats, reason). stats is a dict {cell_count, fragments_total,
@@ -142,9 +169,9 @@ def compute_cluster_stats(
           plot_per_cell_qc.R metrics file exists, so derive depth from the
           UNFILTERED datatable joined against the guide's barcodes.
 
-    prefiltered_metrics_path is a THIRD, separate source, and it takes
-    precedence over both branches above: see its own comment in the body for
-    why it is not the same thing as `prefiltered` despite the shared word.
+    qc_stats_path is a THIRD, separate source, and it takes precedence over
+    both branches above: see its own comment in the body for why it is not the
+    same thing as `prefiltered` despite the overlapping vocabulary.
 
     This used to be implicit: `if guide has the default name AND a metrics file
     exists -> metrics, else -> datatable join`. That silently substituted
@@ -159,26 +186,35 @@ def compute_cluster_stats(
     umi_count is None (not zero) for ATAC-only clusters -- the min_umi_count
     threshold is skipped for them, not failed.
     """
-    if prefiltered_metrics_path is not None:
+    if qc_stats_path is not None:
         # This cluster's ATAC fragments arrived already filtered/QC'd (an
         # `atac_frag_file` marker in place of pseudobulk_annotation/qc_guide --
-        # e.g. catlas's WashU pseudobulks, pulled pre-filtered straight from the
-        # IGVF Data Portal). It has NO qc_guide and NO per-cell QC table, so
-        # neither branch below can run at all; rule
-        # prefiltered_cell_subsample_metrics (prefiltered_fragments.smk) supplies
-        # the one file the QC-guide flow would otherwise have produced.
+        # e.g. the CATlas pseudobulks, pulled pre-filtered straight from the IGVF
+        # Data Portal). There is no qc_guide and no per-cell QC table anywhere in
+        # this flow, so neither branch below can run.
         #
-        # NOT the same thing as `prefiltered` above, despite the name: that flag
-        # means "barcodes were filtered upstream but a qc_guide still exists, so
-        # derive depth from the unfiltered datatable joined against it". Here
-        # there is no guide to join against, which is why this is a third branch
-        # and not another value of that flag.
-        if not os.path.exists(prefiltered_metrics_path):
-            # NOT "missing_metrics": that reason is unprocessable, and this file
-            # is our own output, so reporting it as a missing input deadlocks the
-            # dataset (see UNPROCESSABLE_REASONS). Bootstrap state instead.
-            return None, PENDING_PREFILTERED_METRICS
-        cell_count, fragments_total, umi_count = _stats_from_subsample_metrics(prefiltered_metrics_path)
+        # The gate reads scE2G's OWN dataset-wide summary,
+        # {results}/{dataset}/qc_plots/all_qc_stats.tsv, keyed on its `cluster`
+        # column. Deliberately NOT the QC-guide flow's
+        # filtered_cell_subsample_metrics.tsv: that file is an artifact of a
+        # filtering step this dataset does not have, so gating on it made the
+        # quality bar depend on a pipeline branch that never runs here.
+        #
+        # NOT the same thing as `prefiltered` above, despite the overlapping
+        # vocabulary: that flag means "barcodes were filtered upstream but a
+        # qc_guide still exists, so derive depth from the unfiltered datatable
+        # joined against it". Here there is no guide to join against.
+        summary = _stats_from_qc_summary(qc_stats_path, cluster)
+        if summary is None:
+            # Bootstrap, NOT a missing input: all_qc_stats.tsv is this pipeline's
+            # own output, so reporting its absence as unprocessable deadlocks the
+            # dataset (see UNPROCESSABLE_REASONS).
+            return None, PENDING_QC_STATS
+        cell_count, fragments_total = summary
+        # Forced to None regardless of what the summary says. These clusters have
+        # no RNA and the file records umi_count 0 for them; comparing that to a
+        # min_umi_count would fail every cluster on a metric that does not apply.
+        umi_count = None
     elif not prefiltered:
         # The metrics file plot_per_cell_qc.R writes always sits alongside the QC
         # guide it was derived from -- so read it from qc_guide_path's own directory
@@ -254,6 +290,10 @@ def resolve_exclusions(config, data_dir):
     # be used instead of the legacy one under the read-only data_dir; defaults to
     # the historical location so existing configs behave identically.
     datatables_dir = config.get("qc_datatables_dir") or os.path.join(data_dir, "datatables")
+    # Where the pipeline WRITES results -- the quality gate for
+    # atac_frag_file clusters reads scE2G's own summary from under here.
+    # Shared formula, so this and common.smk's RESULTS_DIR_BASE cannot disagree.
+    results_base = results_dir_base(config, repo_root_from_script(__file__))
 
     exclusion_cfg = config.get("exclusion", {})
     user_specified = _parse_qualified_names(exclusion_cfg.get("user_specified", []))
@@ -274,19 +314,19 @@ def resolve_exclusions(config, data_dir):
         # A cluster whose fragments arrived already filtered carries an
         # `atac_frag_file` marker INSTEAD of pseudobulk_annotation/qc_guide, so
         # both of those keys are absent -- hence .get() below, and hence the
-        # separate metrics path handed to compute_cluster_stats. Written by rule
-        # prefiltered_cell_subsample_metrics (prefiltered_fragments.smk); this
-        # path and that rule's output must stay in agreement.
-        prefiltered_metrics_path = None
+        # separate stats path handed to compute_cluster_stats. That path is
+        # scE2G's own dataset-wide summary, via pipeline_paths.results_dir_base
+        # so it cannot drift from where the pipeline actually writes.
+        qc_stats_path = None
         if "atac_frag_file" in cluster_cfg:
-            prefiltered_metrics_path = os.path.join(
-                data_dir, "plots", dataset, cluster, "filtered_cell_subsample_metrics.tsv",
+            qc_stats_path = os.path.join(
+                results_base, dataset, "qc_plots", "all_qc_stats.tsv",
             )
         stats, stat_reason = compute_cluster_stats(
             datatables_dir, dataset, cluster,
             cluster_cfg.get("pseudobulk_annotation"), cluster_cfg.get("qc_guide"), has_rna,
             prefiltered=bool(cluster_cfg.get("prefiltered", False)),
-            prefiltered_metrics_path=prefiltered_metrics_path,
+            qc_stats_path=qc_stats_path,
         )
 
         if key in user_specified:
