@@ -85,9 +85,18 @@ def parse_args(argv=None):
     )
     p.add_argument(
         "--download-root",
-        required=True,
+        default=None,
         help="destination root, e.g. /scratch/users/$USER/pseudobulk_portal. NOT defaulted on "
-        "purpose: this writes many GB and must be a path you chose deliberately.",
+        "purpose: this writes many GB and must be a path you chose deliberately. Prefer "
+        "--pipeline-config, which reads it from the config that also consumes the files.",
+    )
+    p.add_argument(
+        "--pipeline-config",
+        default=None,
+        help="a *_pipeline_config.yaml to read `download_root` from. This is the preferred way to "
+        "set the destination: the same key is the root of every atac_frag_file in that config, so "
+        "the fetch target and the pipeline's inputs cannot drift apart. Mutually exclusive with "
+        "--download-root.",
     )
     p.add_argument("--state-db", required=True, help="the same SQLite ledger manage_igvf_metadata.py uses")
     p.add_argument(
@@ -203,6 +212,28 @@ def verify_against_archive(records, archive_root, skip_datasets=()):
 
 def main(argv=None):
     args = parse_args(argv)
+
+    # Exactly one source for the destination. Accepting both and picking one
+    # would let a config and a flag disagree about where hundreds of GB land.
+    if bool(args.download_root) == bool(args.pipeline_config):
+        raise SystemExit(
+            "give exactly one of --download-root or --pipeline-config "
+            "(--pipeline-config is preferred: it reads `download_root` from the same config that "
+            "consumes the downloaded files)."
+        )
+    if args.pipeline_config:
+        import yaml
+
+        with open(args.pipeline_config) as f:
+            cfg = yaml.safe_load(f) or {}
+        args.download_root = cfg.get("download_root")
+        if not args.download_root:
+            raise SystemExit(
+                f"{args.pipeline_config} has no `download_root` key. Add it (see "
+                "generate_catlas_config.py, which writes it) or pass --download-root explicitly."
+            )
+        log(f"download_root from {args.pipeline_config}: {args.download_root}")
+
     datasets = {d.strip() for d in args.datasets.split(",") if d.strip()} or None
     species = {s.strip() for s in args.species.split(",") if s.strip()} or None
     content_types = (

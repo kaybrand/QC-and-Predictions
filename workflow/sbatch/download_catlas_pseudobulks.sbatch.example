@@ -54,7 +54,8 @@
 #     dataset label is `catlas-{species}`.
 #
 # WHERE IT LANDS
-#     $DOWNLOAD_ROOT/catlas-human/fragments/human-{cluster}_fragments.tsv.gz
+#     {download_root}/catlas-human/fragments/human-{cluster}_fragments.tsv.gz
+#     where download_root comes from the pipeline config, not from this script.
 #
 #     On $SCRATCH, never $OAK: this is job data I/O, and $OAK is near quota.
 #     BEWARE THE 90-DAY PURGE -- $SCRATCH deletes files 90 days after their last
@@ -86,7 +87,11 @@ FORGE=/path/to/your/miniforge3                   # conda/mamba install root
 # ---------------------------------------------------------------------------
 
 DRIVER_ENV=igvf_utils_env         # igvf_utils + SQLite >= 3.24; no snakemake needed here
-DOWNLOAD_ROOT="${CATLAS_DOWNLOAD_ROOT:-$SCRATCH/CATlas_pseudobulks}"
+# The destination is NOT set here. It comes from the pipeline config's
+# `download_root`, which is also the root of every atac_frag_file in that same
+# config -- so where files are fetched TO and where the pipeline looks FOR them
+# cannot drift apart. Point this at the config for the dataset you are fetching.
+PIPELINE_CONFIG="${CATLAS_PIPELINE_CONFIG:-$REPO/workflow/config/catlas-human_pipeline_config.yaml}"
 
 DRIVER_PY="$FORGE/envs/$DRIVER_ENV/bin/python"
 # This worktree's OWN ledger, never QC_pseudobulks-igvf-portal-submission's.
@@ -96,19 +101,26 @@ STATE_DB="$REPO/resources/igvf_metadata_state.db"
 
 [ -d "$REPO" ]      || { echo "REPO is unset or wrong: $REPO" >&2; exit 2; }
 [ -x "$DRIVER_PY" ] || { echo "no interpreter at $DRIVER_PY (check FORGE / DRIVER_ENV)" >&2; exit 2; }
-[ -n "${SCRATCH:-}" ] || { echo "SCRATCH is not set" >&2; exit 2; }
+[ -f "$PIPELINE_CONFIG" ] || { echo "no pipeline config at $PIPELINE_CONFIG" >&2; exit 2; }
+
+# Read back the destination purely to create it and report free space -- the
+# downloader reads the same key itself, so this is a display/mkdir convenience,
+# never a second source of truth.
+DOWNLOAD_ROOT=$(sed -n 's/^download_root:[[:space:]]*//p' "$PIPELINE_CONFIG" | head -1)
+[ -n "$DOWNLOAD_ROOT" ] || { echo "$PIPELINE_CONFIG has no download_root key" >&2; exit 2; }
 
 mkdir -p "$DOWNLOAD_ROOT" "$REPO/slurm_logs" || exit 2
 
 cd "$REPO"
-echo "[download_catlas.sbatch] download root: $DOWNLOAD_ROOT"
-echo "[download_catlas.sbatch] ledger:        $STATE_DB"
+echo "[download_catlas.sbatch] pipeline config: $PIPELINE_CONFIG"
+echo "[download_catlas.sbatch] download root:   $DOWNLOAD_ROOT  (from that config)"
+echo "[download_catlas.sbatch] ledger:          $STATE_DB"
 df -h "$DOWNLOAD_ROOT" | tail -1
 
 "$DRIVER_PY" workflow/scripts/download_portal_pseudobulks.py \
     --family catlas \
     --species human \
-    --download-root "$DOWNLOAD_ROOT" \
+    --pipeline-config "$PIPELINE_CONFIG" \
     --state-db "$STATE_DB" \
     --max-workers 4 \
     "$@"

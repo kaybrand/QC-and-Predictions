@@ -135,7 +135,26 @@ def multiome_data_dir(dataset):
 
 
 def pseudobulks_dir(dataset):
-    return os.path.join(config["pseudobulks_root"], dataset, "pseudobulks")
+    """The QC-guide flow's raw pseudobulk tree. Only reached by
+    filter_pseudobulks.smk's atac_fragment_file/rna_count_matrix rules, which
+    are never instantiated for `atac_frag_file` clusters.
+
+    `pseudobulks_root` is therefore NOT a required config key: a config whose
+    every cluster is atac_frag_file (e.g. any CATlas dataset) never calls this,
+    and must not be forced to name a directory it has no use for. Raises with
+    the reason rather than a bare KeyError if it ever is called without one --
+    that would mean a QC-guide cluster reached a config that omitted it, which
+    is a real misconfiguration and should say so.
+    """
+    root = config.get("pseudobulks_root")
+    if not root:
+        raise ValueError(
+            f"{dataset}: pseudobulks_dir() needs config['pseudobulks_root'], which this config "
+            "does not set. That key is only for the QC-guide flow (pseudobulk_annotation + "
+            "qc_guide clusters); a cluster using atac_frag_file should never reach here. Either "
+            "the cluster is misconfigured or pseudobulks_root is genuinely missing."
+        )
+    return os.path.join(root, dataset, "pseudobulks")
 
 
 # ---------------------------------------------------------------------------

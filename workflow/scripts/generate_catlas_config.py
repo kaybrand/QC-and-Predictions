@@ -68,12 +68,19 @@ gtf: {gtf}
 # it must never be the QC_pseudobulks tree.
 data_dir: {data_dir}
 
-# The download root this dataset's fragments actually came from
-# (download_portal_pseudobulks.py --family catlas --download-root). Every
-# cluster addresses its file by exact atac_frag_file path, so nothing globs
-# under here -- but pointing it at the real tree keeps the config honest about
-# where the inputs live instead of naming a path that does not exist.
-pseudobulks_root: {pseudobulks_root}
+# WHERE THE CATLAS FRAGMENTS LIVE, and the single source of truth for it.
+# download_portal_pseudobulks.py --pipeline-config reads this to decide where to
+# PUT downloads, and every atac_frag_file below resolves under it -- so the
+# fetch destination and the pipeline's inputs cannot drift apart.
+#
+# NOT `pseudobulks_root`: that key feeds pseudobulks_dir() -> the QC-guide
+# atac_fragment_file/rna_count_matrix rules, which are never instantiated for
+# atac_frag_file clusters and never will be for CATlas. It is deliberately
+# absent from this config rather than set to a plausible-looking value, because
+# pseudobulks_dir() appends "/{{dataset}}/pseudobulks" and CATlas's layout is
+# "/{{dataset}}/fragments" -- a value here would resolve to a directory that
+# does not exist while looking live.
+download_root: {download_root}
 
 # Replaces the pre-rebase `results_dir_base`, which nothing reads any more --
 # common.smk now derives RESULTS_DIR_BASE = {{output_dir}}/uniformly_processed.
@@ -151,6 +158,13 @@ def parse_args(argv=None):
     p.add_argument("--dataset", default="catlas-human",
                    help="ledger dataset label AND the config's dataset key (default catlas-human)")
     p.add_argument("--out", required=True)
+    p.add_argument(
+        "--download-root", default=None,
+        help="where the CATlas fragments live; written into the config as `download_root`, which "
+             "is what download_portal_pseudobulks.py --pipeline-config then reads to decide where "
+             "to fetch INTO. Defaults to the root already recorded in --out (regeneration) or, "
+             "failing that, inferred from the ledger's own local_path values.",
+    )
     p.add_argument("--repo", default=None, help="repo root; defaults to two levels above this script")
     p.add_argument("--pipeline-mode", default="local_only", choices=("local_only", "default"),
                    help="local_only (default) makes no Portal contact and requests no reformat "
@@ -164,6 +178,24 @@ def parse_args(argv=None):
     p.add_argument("--gtf", default="/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/"
                                    "uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz")
     return p.parse_args(argv)
+
+
+def _existing_download_root(path):
+    """`download_root` from an already-generated config, or None.
+
+    Read with a line scan rather than a YAML parse so this stays usable when the
+    file is absent, half-written, or has a clusters block too large to be worth
+    loading just to recover one string.
+    """
+    if not os.path.exists(path):
+        return None
+    with open(path) as f:
+        for line in f:
+            if line.startswith("download_root:"):
+                return line.split(":", 1)[1].strip() or None
+            if line.startswith("clusters:"):
+                break
+    return None
 
 
 def load_clusters(conn, dataset):
@@ -219,17 +251,31 @@ def main(argv=None):
             f"{missing[0][1]} -- was $SCRATCH purged? Re-run the downloader (it resumes)."
         )
 
-    # The download root, recovered from the ledger's own local_path values rather
-    # than passed in, so pseudobulks_root can never disagree with where the
-    # fragments actually are. Layout is {root}/{dataset}/fragments/{file} (see
+    # download_root precedence: explicit flag > the root already in --out (so
+    # regenerating never silently relocates a dataset) > inferred from the
+    # ledger. Whatever wins is then CHECKED against the ledger, because the
+    # config is what the downloader will fetch into and the atac_frag_file paths
+    # below have to resolve under it.
+    #
+    # Ledger layout is {root}/{dataset}/fragments/{file} (see
     # portal_files.catlas_resolve_scope), so the root is three levels up.
-    roots = {os.path.dirname(os.path.dirname(os.path.dirname(p))) for _c, p in clusters}
-    if len(roots) != 1:
+    ledger_roots = {os.path.dirname(os.path.dirname(os.path.dirname(p))) for _c, p in clusters}
+    if len(ledger_roots) != 1:
         raise SystemExit(
-            f"ledger local_paths span {len(roots)} download roots ({sorted(roots)}); "
-            "pseudobulks_root can only name one. Re-download into a single tree."
+            f"ledger local_paths span {len(ledger_roots)} download roots "
+            f"({sorted(ledger_roots)}); download_root can only name one. "
+            "Re-download into a single tree."
         )
-    download_root = roots.pop()
+    ledger_root = ledger_roots.pop()
+    download_root = args.download_root or _existing_download_root(args.out) or ledger_root
+    if download_root != ledger_root:
+        raise SystemExit(
+            f"download_root {download_root!r} disagrees with where the ledger says the fragments "
+            f"actually are ({ledger_root!r}). The config's download_root is BOTH the fetch "
+            "destination and the root of every atac_frag_file path, so a mismatch would generate "
+            "a config pointing at files that are not there. Re-download into the new root, or "
+            "pass --download-root to match the ledger."
+        )
 
     mode_note = (
         "local_only: no IGVF Portal contact at any stage, and no reformat targets "
@@ -254,7 +300,7 @@ def main(argv=None):
         sce2g_dir=args.scE2G_dir,
         gtf=args.gtf,
         data_dir=os.path.join(repo, "data"),
-        pseudobulks_root=download_root,
+        download_root=download_root,
         output_dir=os.path.join(repo, "results"),
         sce2g_version=args.scE2G_version,
         pipeline_mode=args.pipeline_mode,
