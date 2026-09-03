@@ -1,0 +1,122 @@
+#!/bin/bash
+#SBATCH --job-name=catlas_dryrun
+#SBATCH --partition=engreitz
+#SBATCH --time=4:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=48G
+#SBATCH --output=slurm_logs/catlas_dryrun_%j.out
+#SBATCH --error=slurm_logs/catlas_dryrun_%j.err
+#
+# `snakemake -n` for a CATlas dataset, in a job rather than on a login node.
+#
+# TEMPLATE -- copy this somewhere of your own and set the two paths below.
+#
+#     mkdir -p resources slurm_logs
+#     cp workflow/sbatch/dryrun_catlas_pipeline.sbatch.example \
+#        resources/dryrun_catlas_pipeline.sbatch
+#     # edit REPO and FORGE
+#     sbatch resources/dryrun_catlas_pipeline.sbatch
+#
+# USAGE
+#     sbatch <this> [config-basename] [extra run_pipeline.py args...]
+#
+#     sbatch <this>                        # catlas-human, the default
+#     sbatch <this> catlas-mouse           # once that dataset exists
+#     sbatch <this> catlas-human --jobs 1  # narrower fan-out
+#
+# WHY THIS IS A JOB, NOT A LOGIN-NODE COMMAND. A dry run still does all of
+# Snakemake's parse-time work, which for this dataset means: resolving
+# exclusions over 257 clusters, generating scE2G's cell_clusters TSV, importing
+# scE2G's own Snakefile as a module (which re-parses ITS whole workflow), and
+# building a DAG across 257 x every rule. That is minutes of CPU and tens of GB
+# of RAM, not a quick check. --mem=48G is a deliberate over-allocation because
+# an OOM here looks identical to a config error in the log.
+#
+# WHAT A PASS LOOKS LIKE
+#   - "Processing (incl. excluded, no-upload) clusters: [... 257 ...]" and
+#     "Upload-eligible clusters: []" -- see below, the empty list is CORRECT.
+#   - a job-count table listing scE2G's rules with counts scaling with 257
+#   - exit 0
+#
+# EXPECT "Upload-eligible clusters: []" ON THIS FIRST RUN. The quality gate
+# reads scE2G's own {output_dir}/uniformly_processed/{dataset}/qc_plots/
+# all_qc_stats.tsv, which does not exist until scE2G has actually run -- so
+# every cluster reports pending_qc_stats and nothing is upload-eligible yet.
+# That is the bootstrap, not a failure. exclusion.predictions_on_everything_but
+# _do_not_upload: true is what makes all 257 still get PROCESSED meanwhile.
+# The gate only bites on a later parse, once that file exists.
+#
+# local_only comes from the config's own pipeline_mode, so this contacts the
+# IGVF Portal at no point: no cache warm, no manifests, no reformat targets
+# (REFORMAT_ELIGIBLE_CLUSTERS is empty by construction in that mode).
+#
+# NEVER LETS SNAKEMAKE BUILD CONDA ENVS. The driver bakes in --conda-prefix
+# (default: scE2G's own already-populated .snakemake/conda) and hard-refuses to
+# run if that directory is absent, because a fresh prefix reads as "every env
+# needs building from scratch" and concurrent runs then race and corrupt each
+# other's downloads. It also bakes in --rerun-triggers mtime, which is REQUIRED
+# alongside an explicit --conda-prefix: without it the prefix itself reads as
+# "software environment changed" and queues a rebuild of already-correct
+# outputs. Do not add --conda-create-envs-only, and do not pass
+# --cleanup-metadata or --touch.
+#
+# A dry run takes no Slurm executor: the driver only adds --executor slurm for a
+# REAL run, so everything here happens inside this one allocation.
+#
+# CREDENTIALS are not needed in local_only mode, but sbatch forwards the
+# environment anyway. Never pass them as arguments -- this repo is public.
+
+set -uo pipefail
+
+DATASET="${1:-catlas-human}"
+shift 2>/dev/null || true
+
+# ---- SET THESE TWO ---------------------------------------------------------
+REPO=/path/to/your/CATlas_predictions            # this worktree
+FORGE=/path/to/your/miniforge3                   # conda/mamba install root
+# ---------------------------------------------------------------------------
+
+SNAKEMAKE_ENV=run_snakemake9      # has snakemake; no igvf_utils
+DRIVER_ENV=igvf_utils_env         # has igvf_utils + SQLite >= 3.24; no snakemake
+
+DRIVER_PY="$FORGE/envs/$DRIVER_ENV/bin/python"
+CONFIG="$REPO/workflow/config/${DATASET}_pipeline_config.yaml"
+
+[ -d "$REPO" ]      || { echo "REPO is unset or wrong: $REPO" >&2; exit 2; }
+[ -x "$DRIVER_PY" ] || { echo "no interpreter at $DRIVER_PY (check FORGE / DRIVER_ENV)" >&2; exit 2; }
+[ -f "$CONFIG" ]    || { echo "no pipeline config at $CONFIG -- generate it first with
+    python workflow/scripts/generate_catlas_config.py --state-db resources/igvf_metadata_state.db \\
+        --dataset $DATASET --out workflow/config/${DATASET}_pipeline_config.yaml" >&2; exit 2; }
+
+source "$FORGE/etc/profile.d/conda.sh"
+source "$FORGE/etc/profile.d/mamba.sh"
+# Defensive: nested-activation states can leave the activated env's bin/ late in
+# $PATH. Clear anything inherited before activating.
+for _ in 1 2 3; do mamba deactivate 2>/dev/null || true; done
+mamba activate "$SNAKEMAKE_ENV"
+
+cd "$REPO"
+mkdir -p slurm_logs
+
+echo "[dryrun.sbatch] dataset : $DATASET"
+echo "[dryrun.sbatch] config  : $CONFIG"
+echo "[dryrun.sbatch] clusters: $(grep -cE '^    [A-Za-z0-9_.-]+:$' "$CONFIG") configured"
+echo "[dryrun.sbatch] mode    : $(sed -n 's/^pipeline_mode:[[:space:]]*//p' "$CONFIG" | head -1) (from the config)"
+echo "[dryrun.sbatch] snakemake: $(command -v snakemake) -- $(snakemake --version 2>/dev/null)"
+echo
+
+# -n goes through the driver, not straight to snakemake, so the dry run
+# exercises the SAME preflight + config + conda-prefix + rerun-triggers path a
+# real run will take. A bare `snakemake -n` would skip all of that and could
+# pass while the real invocation fails.
+"$DRIVER_PY" workflow/scripts/run_pipeline.py \
+    --pipeline-config "$CONFIG" \
+    -n \
+    "$@"
+rc=$?
+echo
+echo "[dryrun.sbatch] driver exit=$rc"
+echo "[dryrun.sbatch]   0 = the DAG parses and the plan is complete"
+echo "[dryrun.sbatch]   1 = it ran but something is incomplete -- read the PROBLEM/DEGRADED lines"
+echo "[dryrun.sbatch]   2 = preflight/config error: nothing was planned"
+exit $rc
