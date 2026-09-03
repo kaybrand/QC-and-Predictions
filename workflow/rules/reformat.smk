@@ -132,6 +132,12 @@ def get_reformat_output_files():
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz.tbi"))
         if "multiome_powerlaw_v3" in models:
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz"))
+        if "scATAC_powerlaw_v3" in models:
+            # scATAC gets a gene list too (see reformat_gene_list_from_predictions),
+            # built from the predictions rather than from Multiome's RNA-derived
+            # scE2G_gene_list -- so this is gated on its own model, not shared with
+            # the multiome branch above.
+            files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_gene_list.tsv.gz"))
     return files
 
 
@@ -225,6 +231,70 @@ rule reformat_gene_list:
         """
         Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
         -i {input} \
+        -o {output} \
+        -c "{params.name}" \
+        -d "{params.term_id}" \
+        -s "{params.summary}" \
+        -m scE2G_{params.model} \
+        -v {params.version} \
+        -l "{params.portal_link}"
+        """
+
+
+rule reformat_gene_list_from_predictions:
+    """The scATAC gene list. Sourced from scE2G_predictions.tsv.gz, NOT from
+    scATAC_powerlaw_v3/scE2G_gene_list.tsv.gz (which does exist -- contrary to
+    the claim in igvf_metadata/tables/prediction_tabular_files.py that scE2G
+    writes a gene list only for Multiome).
+
+    Deliberately a separate rule from reformat_gene_list above rather than a
+    genericisation over {model}, because the two are not the same operation:
+      - multiome reads scE2G_gene_list and emits all 20531 annotated genes;
+      - this reads the predictions and emits only the genes actually SCORED
+        (14942 for catlas Bgl_51 -- exactly scE2G_gene_list's
+        considered_for_predictions=TRUE subset).
+    Merging them would hide that difference behind a wildcard. Multiome is also
+    never run on this branch, so nothing here can regress it.
+
+    processed_genes_file.bed is the second input purely for GeneStrand: no
+    scE2G_predictions file carries strand in either model family (multiome's 27
+    columns are a strict superset of scATAC's 20, and neither has it). It is a
+    cluster-level, sample-agnostic genome annotation -- byte-identical across
+    all 157 cluster directories checked -- so it adds nothing cluster-specific.
+    The R script hard-fails if the join is incomplete or if the two inputs
+    disagree on any gene's TSS."""
+    input:
+        predictions=os.path.join(
+            RESULTS_DIR_BASE, "{dataset}", "{cluster}", "scATAC_powerlaw_v3", "scE2G_predictions.tsv.gz",
+        ),
+        strand_annotation=os.path.join(
+            RESULTS_DIR_BASE, "{dataset}", "{cluster}", "processed_genes_file.bed",
+        ),
+    output:
+        os.path.join(
+            RESULTS_DIR_BASE, "{dataset}", "{cluster}",
+            "{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_gene_list.tsv.gz",
+        ),
+    params:
+        model="scATAC_powerlaw_v3",
+        version=config["scE2G_version"],
+        name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
+        term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
+        summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
+        # "genes" is Prediction Tabular Files' own variant naming (plural).
+        portal_link=lambda wildcards: portal_link_alias(
+            wildcards.dataset, wildcards.cluster, "scATAC_powerlaw_v3", "genes",
+        ),
+    conda:
+        "../envs/e2g_jamboree_env.yml"
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
+        --genes_from_predictions \
+        -i {input.predictions} \
+        --strand_annotation {input.strand_annotation} \
         -o {output} \
         -c "{params.name}" \
         -d "{params.term_id}" \
