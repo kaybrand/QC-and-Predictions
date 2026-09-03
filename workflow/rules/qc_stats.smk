@@ -47,6 +47,31 @@ def per_cluster_stats_files(dataset):
     return files
 
 
+def dataset_plots_dir(dataset):
+    """The plots tree aggregate_qc_stats.py reads this dataset's per-cluster
+    metrics from.
+
+    Derived from an actual cluster's own qc_guide when one exists, so a
+    --qc-guide-dir override at config-generation time is honoured here too --
+    every cluster in a QC-guide dataset shares the same plots tree by
+    construction, hence "first cluster that has one" rather than a merge.
+
+    Falls back to {data_dir}/plots/{dataset} when NO cluster in the dataset has
+    a qc_guide. That is the case for an entirely atac_frag_file dataset (any
+    CATlas one), where no QC guide exists anywhere -- and the unconditional
+    `next(iter(...))["qc_guide"]` this replaces raised
+    `InputFunctionException: KeyError: 'qc_guide'` for the whole dataset,
+    killing the DAG before a single job was planned. The fallback is exactly
+    where prefiltered_metrics_files() above writes, so the two agree by
+    construction.
+    """
+    for cluster_cfg in config["clusters"][dataset].values():
+        qc_guide = cluster_cfg.get("qc_guide")
+        if qc_guide:
+            return os.path.dirname(os.path.dirname(qc_guide))
+    return os.path.join(config["data_dir"], "plots", dataset)
+
+
 def prefiltered_metrics_files(dataset):
     """This run's filtered_cell_subsample_metrics.tsv paths for `dataset`'s
     atac_frag_file clusters (e.g. catlas) -- declared as an explicit input,
@@ -141,12 +166,7 @@ rule aggregate_qc_stats:
         prefiltered_metrics=lambda wildcards: prefiltered_metrics_files(wildcards.dataset),
     params:
         dataset_dir=os.path.join(RESULTS_DIR_BASE, "{dataset}"),
-        # Derived from an actual cluster's own qc_guide (not config["data_dir"] + "plots")
-        # so a --qc-guide-dir override at config-generation time is honored here too --
-        # every cluster in a dataset shares the same plots tree by construction.
-        plots_dir=lambda wildcards: os.path.dirname(os.path.dirname(
-            next(iter(config["clusters"][wildcards.dataset].values()))["qc_guide"]
-        )),
+        plots_dir=lambda wildcards: dataset_plots_dir(wildcards.dataset),
     output:
         all_stats=os.path.join(QC_PLOTS_DIR, "all_qc_stats.tsv"),
     conda:
