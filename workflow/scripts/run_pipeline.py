@@ -111,7 +111,23 @@ def parse_args():
     p.add_argument("-n", "--dry-run", action="store_true",
                    help="preview every stage: no portal GET, no derive, snakemake -n, no manifest/audit")
     p.add_argument("--conda-prefix", default=None)
-    p.add_argument("--jobs", default="4")
+    p.add_argument(
+        "--retries", default="2",
+        help="re-submit a failed child job this many times. Non-zero by default because "
+             "slurm.smk9 spans the PREEMPTABLE `owners` and `normal` partitions, and it "
+             "sets retries:0 -- so a preempted child was permanently lost for that "
+             "invocation. With --keep-going the run continues and the loss is silent "
+             "until you notice a cluster has no outputs. Set 0 to restore the old "
+             "behaviour.",
+    )
+    p.add_argument(
+        "--jobs", default=None,
+        help="max concurrent Slurm jobs. DEFAULT: unset, so the --profile's own `jobs:` "
+             "value applies (slurm.smk9 says 10). This used to default to \"4\", and an "
+             "explicit CLI --jobs ALWAYS beats the profile -- so every run was silently "
+             "capped at 4 no matter what the profile said. That throttled the catlas-human "
+             "run badly, where 0.76 TiB of fragment sorting is the dominant cost.",
+    )
     p.add_argument("--snakemake-arg", action="append", default=[],
                    help="extra argument passed through to snakemake (repeatable)")
     p.add_argument("--skip-snakemake", action="store_true",
@@ -381,9 +397,12 @@ def run_snakemake(ctx, args):
         # changed" and queues a full rebuild of already-correct outputs.
         "--rerun-triggers", "mtime",
         "--keep-going",
-        "--jobs", str(args.jobs),
+        "--retries", str(args.retries),
         "--config", f"pipeline_mode={ctx['mode']}", f"sce2g_modules={args.sce2g_modules}",
     ]
+    # Only pass --jobs when asked, so the profile's own value is the default.
+    if args.jobs is not None:
+        cmd += ["--jobs", str(args.jobs)]
     if args.dry_run:
         cmd.append("-n")
     else:
