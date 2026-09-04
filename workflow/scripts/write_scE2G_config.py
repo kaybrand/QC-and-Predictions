@@ -40,6 +40,8 @@ import csv
 import fcntl
 import os
 
+from pipeline_paths import sorted_frag_file
+
 LAB_ANNOTATIONS_PATH = "/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/scE2G_products_table/metadata/lab_annotations_with_cl.tsv"
 
 CELL_CLUSTERS_HEADER = [
@@ -117,9 +119,15 @@ def _locked_read_merge_write(path, header, key_col, merge_fn):
         os.close(lock_fd)
 
 
-def write_cell_clusters_table(dataset, dataset_clusters_cfg, included_cluster_names, out_dir, out_dir_data, scE2G_dir):
+def write_cell_clusters_table(
+    dataset, dataset_clusters_cfg, included_cluster_names, out_dir, out_dir_data, scE2G_dir,
+    config=None,
+):
     """
     dataset_clusters_cfg: config["clusters"][dataset] (bare cluster name -> cluster config)
+    config: the whole pipeline config. Required only if any cluster here uses
+        atac_frag_file, whose scE2G-facing path is the sorted copy and so needs
+        download_root/sorted_fragments_dir -- see pipeline_paths.sorted_frag_file.
     included_cluster_names: bare cluster names (within this dataset) included this run
     out_dir_data: the multiome_data/{dataset} directory holding filtered ATAC/RNA outputs
 
@@ -135,10 +143,24 @@ def write_cell_clusters_table(dataset, dataset_clusters_cfg, included_cluster_na
             cluster_cfg = dataset_clusters_cfg[cluster]
             is_atac_only = cluster_cfg["models"] == ["scATAC_powerlaw_v3"]
             if "atac_frag_file" in cluster_cfg:
-                # Already-filtered/QC'd fragments (e.g. catlas) -- use the literal
-                # path directly, bypassing atac_fragment_file/filter_atac_fragments.py
-                # entirely (that rule is simply never requested for these clusters).
-                atac_frag_file = cluster_cfg["atac_frag_file"]
+                # Already-filtered/QC'd fragments (e.g. catlas), so
+                # atac_fragment_file/filter_atac_fragments.py is bypassed entirely
+                # (that rule is never requested for these clusters).
+                #
+                # scE2G is handed the COORDINATE-SORTED copy, not the raw
+                # cluster_cfg["atac_frag_file"]: scE2G's frag_to_norm_bigWig
+                # requires chromosome-grouped fragments and does not sort them, and
+                # ~18% of the CATlas files are chromosome-interleaved. See
+                # prefiltered_fragments.smk's sort_atac_fragments, which produces
+                # exactly this path -- both sides go through
+                # pipeline_paths.sorted_frag_file so they cannot disagree, since a
+                # mismatch would be a MissingInputException at DAG build.
+                if config is None:
+                    raise ValueError(
+                        f"{dataset}/{cluster} uses atac_frag_file, so write_cell_clusters_table "
+                        "needs the full config to locate its sorted copy. Pass config=."
+                    )
+                atac_frag_file = sorted_frag_file(config, dataset, cluster)
             else:
                 atac_frag_file = os.path.join(out_dir_data, cluster, f"atac_fragments_{dataset}_{cluster}.tsv.gz")
             rna_matrix_file = "" if is_atac_only else os.path.join(out_dir_data, cluster, f"rna_count_matrix_{dataset}_{cluster}")

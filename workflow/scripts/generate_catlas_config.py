@@ -89,6 +89,22 @@ data_dir: {data_dir}
 # does not exist while looking live.
 download_root: {download_root}
 
+# Where coordinate-SORTED copies of the fragments go. On $SCRATCH beside the
+# download tree -- job data I/O, and these are full-size copies (~776 GB for all
+# 257 human clusters), marked temp() so Snakemake reclaims them.
+#
+# Needed because scE2G does NOT sort fragments and assumes it has been done:
+# frag_to_norm_bigWig pipes them straight into `bedtools genomecov -bg`, which
+# requires chromosome-GROUPED input, and only sorts the resulting bedGraph --
+# too late. ~18% of the CATlas files revisit chromosomes later in the file and
+# fail with "Error - overlapping regions in bedGraph".
+# `fragments_preprocessed: False` does not help; that branch only filters to
+# chromosomes in chr_sizes. scE2G's own frag_to_tagAlign DOES sort the same
+# input (via bedSplitSort.sh), so this is an inconsistency upstream -- tracked
+# for a PR, after which prefiltered_fragments.smk's sort_atac_fragments and this
+# key can both go away.
+sorted_fragments_dir: {sorted_fragments_dir}
+
 # Replaces the pre-rebase `results_dir_base`, which nothing reads any more --
 # common.smk now derives RESULTS_DIR_BASE = {{output_dir}}/uniformly_processed.
 # Keeps results under THIS worktree rather than the shared scE2G_dir tree; the
@@ -345,6 +361,7 @@ def main(argv=None):
         sce2g_dir=args.scE2G_dir,
         data_dir=os.path.join(repo, "data"),
         download_root=download_root,
+        sorted_fragments_dir=f"{download_root.rstrip('/')}_sorted",
         output_dir=os.path.join(repo, "results"),
         sce2g_version=args.scE2G_version,
         conda_prefix=args.conda_prefix,

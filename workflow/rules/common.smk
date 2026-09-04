@@ -323,6 +323,7 @@ for _dataset in DATASETS:
     CELL_CLUSTERS_TABLES[_dataset] = write_cell_clusters_table(
         _dataset, config["clusters"][_dataset], _included_names,
         CONFIG_DIR, multiome_data_dir(_dataset), config["scE2G_dir"],
+        config=config,
     )
     _metadata_path = write_cluster_metadata_table(
         _dataset, config["clusters"][_dataset], _included_names, CONFIG_DIR,

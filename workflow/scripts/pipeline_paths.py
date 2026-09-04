@@ -21,6 +21,55 @@ def repo_root_from_script(script_path):
     return os.path.abspath(os.path.join(os.path.dirname(script_path), "..", ".."))
 
 
+def sorted_fragments_dir(config):
+    """Where coordinate-sorted copies of `atac_frag_file` fragments live.
+
+    Defaults to "{download_root}_sorted" so it sits beside the download tree on
+    the same (scratch) filesystem, and is overridable via
+    config["sorted_fragments_dir"]. Returns None when neither is available --
+    only datasets with atac_frag_file clusters need this at all.
+    """
+    explicit = config.get("sorted_fragments_dir")
+    if explicit:
+        return explicit
+    root = config.get("download_root")
+    return f"{root.rstrip('/')}_sorted" if root else None
+
+
+def sorted_frag_file(config, dataset, cluster):
+    """The coordinate-sorted fragments file the pipeline hands to scE2G for an
+    `atac_frag_file` cluster, in place of the raw download.
+
+    WHY THIS EXISTS. scE2G's frag_to_norm_bigWig pipes fragments straight into
+    `bedtools genomecov -bg`, which requires chromosome-GROUPED input, and only
+    sorts the resulting bedGraph afterwards -- which cannot repair overlapping
+    intervals genomecov has already emitted from interleaved input. The CATlas
+    fragment files are inconsistently sorted upstream: positions are sorted
+    within each run of a chromosome, but ~18% of files revisit chromosomes
+    later, and those fail with "Error - overlapping regions in bedGraph".
+    scE2G's `fragments_preprocessed: False` does NOT help -- that branch
+    (process_fragment_file) filters to chromosomes in chr_sizes and never
+    sorts. Verified 2026-09-03; scE2G's own frag_to_tagAlign DOES sort the same
+    input via bedSplitSort.sh, so this is an inconsistency in scE2G, tracked for
+    an upstream PR.
+
+    Defined here rather than in either caller because two places must agree
+    exactly: the rule that WRITES this file (prefiltered_fragments.smk's
+    sort_atac_fragments) and write_scE2G_config.py, which puts the path into
+    scE2G's cell_clusters TSV as its atac_frag_file. A mismatch would leave
+    Snakemake unable to find a producing rule for scE2G's declared input, i.e. a
+    MissingInputException at DAG build.
+    """
+    base = sorted_fragments_dir(config)
+    if not base:
+        raise ValueError(
+            f"{dataset}/{cluster} uses atac_frag_file, so it needs sorted fragments, but neither "
+            "config['sorted_fragments_dir'] nor config['download_root'] is set to derive a "
+            "location from."
+        )
+    return os.path.join(base, dataset, f"{cluster}_fragments.sorted.tsv.gz")
+
+
 def results_dir_base(config, repo_root):
     """The dataset-AGNOSTIC results parent, "{output_dir}/uniformly_processed".
 
