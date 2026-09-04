@@ -1,0 +1,78 @@
+#!/bin/bash
+#SBATCH --job-name=catlas_dup_census
+#SBATCH --partition=engreitz
+#SBATCH --time=12:00:00
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=8G
+#SBATCH --output=slurm_logs/catlas_dup_census_%j.out
+#SBATCH --error=slurm_logs/catlas_dup_census_%j.err
+#
+# Census of duplicate CATlas ATAC fragment files, keyed by portal alias.
+#
+# TEMPLATE -- copy this somewhere of your own and set the two paths below.
+#
+#     cp workflow/sbatch/census_duplicate_fragments.sbatch.example \
+#        resources/census_duplicate_fragments.sbatch
+#     # edit REPO and FORGE
+#     sbatch resources/census_duplicate_fragments.sbatch
+#
+# USAGE
+#     sbatch <this> [dataset] [extra find_duplicate_fragments.py args...]
+#
+#     sbatch <this>                    # catlas-human
+#     sbatch <this> catlas-human --allow-resort   # also sort raw downloads for
+#                                                 # clusters the pipeline has
+#                                                 # not processed yet
+#
+# RUN THIS AFTER THE PIPELINE FINISHES. The census hashes each cluster's SORTED
+# fragment content, and its durable source is
+# results/uniformly_processed/{dataset}/{cluster}/fragments_filtered.tsv.gz,
+# which only exists once that cluster has been processed. The pipeline's own
+# sorted copies under sorted_fragments_dir are temp() and are deleted as they
+# are consumed, so they cannot be relied on. The script reports exactly which
+# clusters it could not hash rather than quietly reporting a short list.
+#
+# WHY A JOB. It reads and md5s up to 0.76 TiB. Run directly in a shell it timed
+# out at 2 minutes. 12h walltime is generous; --mem=8G is plenty because
+# everything is streamed, never held.
+#
+# WHY IT EXISTS AT ALL. The Portal's duplicate check (`content_md5sum`) is
+# ORDER-SENSITIVE, so two files holding identical fragments in a different row
+# order both validate and the Portal cannot see them. One such pair is already
+# confirmed in catlas-human (Chrp_77 vs supercluster-Choroid_plexus, identical
+# sorted content 926dcc6b00703c94, both validated, both currently getting their
+# own prediction set). See .baton/2026-09-04-duplicate-fragment-files.md.
+#
+# Duplicates are ACCEPTED, not excluded (2026-09-04). This only RECORDS them.
+
+set -uo pipefail
+
+DATASET="${1:-catlas-human}"
+shift 2>/dev/null || true
+
+# ---- SET THESE TWO ---------------------------------------------------------
+REPO=/path/to/your/CATlas_predictions            # this worktree
+FORGE=/path/to/your/miniforge3                   # conda/mamba install root
+# ---------------------------------------------------------------------------
+
+DRIVER_PY="$FORGE/envs/igvf_utils_env/bin/python"
+OUT="$REPO/resources/${DATASET}_duplicate_fragments.tsv"
+
+[ -d "$REPO" ]      || { echo "REPO is unset or wrong: $REPO" >&2; exit 2; }
+[ -x "$DRIVER_PY" ] || { echo "no interpreter at $DRIVER_PY" >&2; exit 2; }
+
+cd "$REPO"
+mkdir -p slurm_logs resources
+
+"$DRIVER_PY" workflow/scripts/find_duplicate_fragments.py \
+    --state-db "$REPO/resources/igvf_metadata_state.db" \
+    --dataset "$DATASET" \
+    --out "$OUT" \
+    "$@"
+rc=$?
+echo
+echo "[census.sbatch] exit=$rc"
+echo "[census.sbatch] record: $OUT"
+echo "[census.sbatch] duplicate groups are the rows with duplicate_group_size > 1;"
+echo "[census.sbatch] sort -k6,6nr on that column to bring them to the top."
+exit $rc
