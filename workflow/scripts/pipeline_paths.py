@@ -21,6 +21,62 @@ def repo_root_from_script(script_path):
     return os.path.abspath(os.path.join(os.path.dirname(script_path), "..", ".."))
 
 
+def scE2G_chr_sizes(config):
+    """Absolute path to the chromosome sizes file scE2G ITSELF uses.
+
+    DERIVED from scE2G's own configs, never taken from our pipeline config.
+    Sorting fragments into a different chromosome order than scE2G's own
+    frag_to_tagAlign uses is precisely the bug class this whole sorting detour
+    exists to avoid, so a second independently-settable copy of this path would
+    be a way to reintroduce it silently.
+
+    The lookup mirrors scE2G's: `chr_sizes` is declared in
+    ENCODE_rE2G/config/config.yaml as a path relative to `encode_re2g_dir`
+    ("reference/GRCh38_EBV.no_alt.chrom.sizes.tsv"), and `encode_re2g_dir` is
+    declared in scE2G's config/config.yaml relative to scE2G_dir.
+    """
+    import yaml
+
+    scE2G_dir = config["scE2G_dir"]
+    with open(os.path.join(scE2G_dir, "config", "config.yaml")) as f:
+        sce2g_cfg = yaml.safe_load(f) or {}
+    encode_dir = sce2g_cfg.get("encode_re2g_dir", "ENCODE_rE2G")
+    if not os.path.isabs(encode_dir):
+        encode_dir = os.path.join(scE2G_dir, encode_dir)
+
+    with open(os.path.join(encode_dir, "config", "config.yaml")) as f:
+        encode_cfg = yaml.safe_load(f) or {}
+    rel = encode_cfg.get("chr_sizes")
+    if not rel:
+        raise ValueError(
+            f"no `chr_sizes` in {encode_dir}/config/config.yaml -- cannot determine the "
+            "chromosome order scE2G expects, and guessing it would risk sorting fragments "
+            "into an order scE2G's own rules disagree with."
+        )
+    path = rel if os.path.isabs(rel) else os.path.join(encode_dir, rel)
+    if not os.path.exists(path):
+        raise ValueError(f"scE2G's chr_sizes points at {path}, which does not exist")
+    return path
+
+
+def bed_split_sort_script(config):
+    """scE2G's own bedSplitSort.sh -- split by chromosome, sort each by position,
+    concatenate in the sizes file's order. Reused rather than reimplemented so
+    fragments get the SAME ordering guarantee scE2G's frag_to_tagAlign already
+    relies on (added there in scE2G 299ca9e / PR #94).
+
+    Read-only use of a file in the scE2G checkout. That checkout is a separate
+    shared worktree and must never be modified from here.
+    """
+    path = os.path.join(config["scE2G_dir"], "workflow", "scripts", "bedSplitSort.sh")
+    if not os.path.exists(path):
+        raise ValueError(
+            f"scE2G's bedSplitSort.sh not found at {path}. It was added in scE2G PR #94; "
+            "an older checkout will not have it."
+        )
+    return path
+
+
 def sorted_fragments_dir(config):
     """Where coordinate-sorted copies of `atac_frag_file` fragments live.
 
