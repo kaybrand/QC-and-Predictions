@@ -29,37 +29,41 @@ def cluster_prefiltered_frag_file(wildcards):
 
 
 rule sort_atac_fragments:
-    """Coordinate-sort an `atac_frag_file` cluster's fragments before scE2G sees
-    them.
+    """Make sure an `atac_frag_file` cluster's fragments are chromosome-grouped
+    before scE2G sees them.
 
     NEEDED because scE2G does not do this and assumes it has been done. Its
     frag_to_norm_bigWig pipes fragments straight into `bedtools genomecov -bg`,
     which requires chromosome-GROUPED input, and only sorts the resulting
     bedGraph -- too late to repair overlapping intervals genomecov already
-    emitted. ~18% of the CATlas files revisit chromosomes later in the file
-    (positions ARE sorted within each run), and every one of those fails with
-    "Error - overlapping regions in bedGraph". `fragments_preprocessed: False`
-    does not help: that branch only filters to chromosomes in chr_sizes.
+    emitted. ~18% of the CATlas files revisit chromosomes later in the file and
+    every one of those fails with "Error - overlapping regions in bedGraph".
     See pipeline_paths.sorted_frag_file for the full diagnosis.
 
-    INTERIM. scE2G's own frag_to_tagAlign sorts the identical input via
-    bedSplitSort.sh, so the real fix is upstream in frag_to_norm_bigWig /
-    frag_to_bigWig; this rule can be deleted once that lands.
+    INTERIM: scE2G's own frag_to_tagAlign sorts the identical input via
+    bedSplitSort.sh, so the real fix is upstream. Delete this rule when that
+    lands.
 
-    `sort -k1,1 -k2,2n` under LC_ALL=C is exactly what scE2G's config comment
-    prescribes ("sorted with sort -k1,1 2n,n"), and matches the lexicographic
-    order its own post-genomecov sort already produces -- so the bedGraph that
-    reaches bedGraphToBigWig is ordered the same way it is today for the files
-    that happen to work.
+    ONLY SORTS WHAT NEEDS SORTING. A single streaming pass decides; if the file
+    is already grouped and position-sorted (about 82% of them) it is HARDLINKED
+    instead of copied, which costs no time and no space. That matters a lot:
+    sorting everything unconditionally made this rule the dominant cost of the
+    whole 258-cluster run, and the largest files (25-52 GiB compressed, hundreds
+    of GB decompressed) blew through the profile's 6h default and had to be
+    retried -- Bipolar_cells exhausted all 3 attempts and was lost.
+    The hardlink is safe: it shares an inode with the download, and temp()
+    removal unlinks only our link, never the original.
 
-    temp(): these are full-size copies of the fragment tree (~776 GB for the 257
-    human clusters), so they are deleted once nothing needs them. The tradeoff
-    is that re-running anything downstream re-sorts; drop the temp() wrapper if
-    that churn ever costs more than the disk.
+    runtime is declared HERE rather than inherited. The profile's `runtime="6h"`
+    is fine for the pipeline's other rules but not for sorting a 52 GiB
+    fragments file to Lustre.
 
-    Written to $SCRATCH (via download_root's sibling, see
-    pipeline_paths.sorted_fragments_dir), never $OAK -- job data I/O, and $OAK
-    is near quota."""
+    sort -T points at a DEDICATED directory, never the output directory. When a
+    sort is killed mid-flight (walltime, preemption) GNU sort cannot clean up,
+    and spill files left beside the outputs are indistinguishable from them --
+    the first version of this rule left 102 orphaned spills, the largest 213 GB,
+    accounting for most of 2.6 TB on $SCRATCH.
+    """
     input:
         frag_file=cluster_prefiltered_frag_file,
     output:
@@ -69,20 +73,37 @@ rule sort_atac_fragments:
             )
         ),
     params:
-        temp_dir=lambda wildcards, output: os.path.dirname(output.sorted_frags),
-    threads: 4
+        # Sibling of the outputs, not the outputs' own directory -- see docstring.
+        sort_tmp=os.path.join(sorted_fragments_dir(config), "sort_tmp"),
+    threads: 8
     resources:
         mem_mb=determine_mem_mb,
+        runtime=24 * 60,
     conda:
         "../envs/filter_multiome_env.yaml"
     shell:
         """
+        set -euo pipefail
         LC_ALL=C
-        BUFFER_SIZE=$(awk -v mem_mb={resources.mem_mb} -v threads={threads} \
-            'BEGIN {{ result = mem_mb/threads/2; print int(result) "M" }}')
-        zcat {input.frag_file} \
-            | sort -k1,1 -k2,2n --parallel={threads} -S $BUFFER_SIZE -T {params.temp_dir} \
-            | bgzip -c > {output.sorted_frags}
+        mkdir -p {params.sort_tmp}
+
+        # One streaming pass: exit 1 the moment a chromosome is revisited or a
+        # position goes backwards within a run. No sort, no spill.
+        if zcat {input.frag_file} | awk '
+              {{ if ($1 != p) {{ if ($1 in s) exit 1; s[$1]=1; p=$1; q=-1 }}
+                 if ($2+0 < q) exit 1; q=$2+0 }}
+              END {{ exit 0 }}'; then
+            echo "[sort_atac_fragments] {wildcards.cluster}: already grouped and sorted -- hardlinking"
+            ln {input.frag_file} {output.sorted_frags} \
+              || cp {input.frag_file} {output.sorted_frags}
+        else
+            echo "[sort_atac_fragments] {wildcards.cluster}: interleaved -- sorting"
+            BUFFER_SIZE=$(awk -v mem_mb={resources.mem_mb} -v threads={threads} \
+                'BEGIN {{ result = mem_mb/threads/2; print int(result) "M" }}')
+            zcat {input.frag_file} \
+                | sort -k1,1 -k2,2n --parallel={threads} -S $BUFFER_SIZE -T {params.sort_tmp} \
+                | bgzip -c > {output.sorted_frags}
+        fi
         """
 
 
