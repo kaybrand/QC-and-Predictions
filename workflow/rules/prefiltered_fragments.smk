@@ -89,10 +89,15 @@ rule sort_atac_fragments:
 
         # One streaming pass: exit 1 the moment a chromosome is revisited or a
         # position goes backwards within a run. No sort, no spill.
+        # NOTE the `bad` flag rather than `exit 1` directly. In awk, `exit N` in a
+        # main block still runs END, so an `exit 0` in END OVERWRITES the status
+        # and every file reports "grouped" -- which would hardlink interleaved
+        # files and silently reinstate the bigWig failures. Caught by validating
+        # against files of known groupedness; do not "simplify" this back.
         if zcat {input.frag_file} | awk '
-              {{ if ($1 != p) {{ if ($1 in s) exit 1; s[$1]=1; p=$1; q=-1 }}
-                 if ($2+0 < q) exit 1; q=$2+0 }}
-              END {{ exit 0 }}'; then
+              {{ if ($1 != p) {{ if ($1 in s) {{ bad=1; exit }} ; s[$1]=1; p=$1; q=-1 }}
+                 if ($2+0 < q) {{ bad=1; exit }} ; q=$2+0 }}
+              END {{ exit (bad ? 1 : 0) }}'; then
             echo "[sort_atac_fragments] {wildcards.cluster}: already grouped and sorted -- hardlinking"
             ln {input.frag_file} {output.sorted_frags} \
               || cp {input.frag_file} {output.sorted_frags}
