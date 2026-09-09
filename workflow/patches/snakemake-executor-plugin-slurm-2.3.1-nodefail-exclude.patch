@@ -1,0 +1,36 @@
+--- snakemake_executor_plugin_slurm/__init__.py	2026-03-03 08:18:54.000000000 -0800
++++ snakemake_executor_plugin_slurm/__init__.py	2026-09-09 14:04:36.000000000 -0700
+@@ -570,7 +570,12 @@
+         # we exclude failed nodes from further job submissions, to avoid
+         # repeated failures.
+         if self._failed_nodes:
+-            call += f" --exclude={','.join(self._failed_nodes)}"
++            # LOCAL PATCH (see __init__.py): quote
++            # the value. Unquoted, a nodelist containing whitespace splits into
++            # extra shell words and sbatch reads the remainder as a script
++            # filename: `--exclude=None assigned` -> "Unable to open file
++            # assigned", which kills EVERY submission for the rest of the run.
++            call += f" --exclude={shlex.quote(','.join(self._failed_nodes))}"
+             self.logger.debug(
+                 f"Excluding the following nodes from job submission: "
+                 f"{','.join(self._failed_nodes)}"
+@@ -870,7 +875,18 @@
+                                 stderr=subprocess.PIPE,
+                             )
+                             node = sacct_output.strip()
+-                            if node:
++                            # LOCAL PATCH: sacct prints sentinels, not node
++                            # names, when no node was ever allocated -- most
++                            # commonly "None assigned". A real NodeList never
++                            # contains whitespace, so reject the whole sentinel
++                            # class rather than one literal. Without this the
++                            # sentinel is cached for the life of the run and
++                            # every later submission carries a bogus --exclude.
++                            if (
++                                node
++                                and not any(c.isspace() for c in node)
++                                and node.lower() != "none"
++                            ):
+                                 self._failed_nodes.add(node)
+                         except subprocess.CalledProcessError as e:
+                             self.logger.warning(
