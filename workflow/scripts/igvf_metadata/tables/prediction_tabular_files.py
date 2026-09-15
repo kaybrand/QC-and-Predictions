@@ -287,7 +287,6 @@ def _genes_row(ctx):
         "content_type": "gene quantifications",
         "file_format": "tsv",
         "description": f"Annotated genes in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
-        "derived_from": refs.rna_matrix_alias(ctx),
         "file_format_specifications": [
             make_alias(ctx.igvf, "gene_quantifications_file_format_specification_pdf"),
             make_alias(ctx.igvf, "gene_quantifications_file_format_specification_md"),
