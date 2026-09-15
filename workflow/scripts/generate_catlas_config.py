@@ -219,7 +219,7 @@ def parse_args(argv=None):
         help="written into the config as snakemake_conda_prefix. Must be an ALREADY-POPULATED env "
              "cache; Snakemake is never allowed to build envs itself.",
     )
-    p.add_argument("--scE2G-version", default="1.2")
+    p.add_argument("--scE2G-version", default="1.3.1")
     p.add_argument("--scE2G-dir",
                    default="/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G")
     return p.parse_args(argv)
