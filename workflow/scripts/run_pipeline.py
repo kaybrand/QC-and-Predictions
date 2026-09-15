@@ -9,18 +9,22 @@ Five stages, in order, stopping according to the failure policy below:
   [0] preflight  Local only. Load the config, resolve exclusions, compute the
                  cluster sets, write a plan TSV, and say exactly which stages
                  this mode will and won't run.
-  [1] warm       DEFAULT MODE ONLY. Under an flock: fetch_if_stale (one wholesale
-                 portal GET, 24h TTL) then derive_scopes (pure local) to build
-                 this dataset's cell_annotations rows. Writes the CellAnnotation
-                 snapshot Snakemake reads, plus a per-cluster status TSV.
+  [1] warm       DEFAULT AND REFORMAT_ONLY MODES. Under an flock: fetch_if_stale
+                 (one wholesale portal GET, 24h TTL) then derive_scopes (pure
+                 local) to build this dataset's cell_annotations rows. Writes
+                 the CellAnnotation snapshot Snakemake reads, plus a
+                 per-cluster status TSV.
   [2] snakemake  ONE invocation. --conda-prefix and --rerun-triggers mtime are
                  baked in because forgetting either has caused real incidents.
                  No --omit-from, ever: local_only makes the reformat targets
                  empty by construction instead.
   [3] manifest   DEFAULT MODE ONLY. manage_igvf_metadata.py in preview (or
-                 validate) mode, scoped to MANIFEST_READY.
+                 validate) mode, scoped to MANIFEST_READY. SKIPPED in
+                 reformat_only mode -- manifest generation deferred, not yet
+                 implemented for every dataset.
   [4] audit      DEFAULT MODE ONLY. Reads manifest_coverage.tsv, regenerates
-                 report.tsv, and decides the exit code.
+                 report.tsv, and decides the exit code. SKIPPED in
+                 reformat_only mode, same as [3].
 
 WHY A DRIVER AND NOT A SNAKEMAKE CHECKPOINT. The cache warm consumes nothing the
 DAG produces -- it is a prerequisite, not an intermediate -- so modelling it
@@ -99,7 +103,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--pipeline-config", required=True)
     p.add_argument(
-        "--mode", choices=["default", "local_only"], default=None,
+        "--mode", choices=["default", "local_only", "reformat_only"], default=None,
         help="overrides the config's pipeline_mode",
     )
     p.add_argument(
@@ -187,8 +191,8 @@ def preflight(args):
         config = yaml.safe_load(f)
 
     mode = args.mode or config.get("pipeline_mode", "default")
-    if mode not in ("default", "local_only"):
-        raise SystemExit(f"pipeline_mode must be 'default' or 'local_only', got {mode!r}")
+    if mode not in ("default", "local_only", "reformat_only"):
+        raise SystemExit(f"pipeline_mode must be 'default', 'local_only', or 'reformat_only', got {mode!r}")
 
     datasets = sorted(config["clusters"])
     if len(datasets) != 1:
@@ -216,6 +220,9 @@ def preflight(args):
     if mode == "local_only":
         log("stages              : [0] preflight -> [2] snakemake. "
             "Warm/manifest/audit SKIPPED (no portal contact of any kind).")
+    elif mode == "reformat_only":
+        log("stages              : [0] preflight -> [1] warm -> [2] snakemake. "
+            "Manifest/audit SKIPPED (reformat_only: manifest generation deferred).")
     else:
         log("stages              : [0] preflight -> [1] warm -> [2] snakemake -> "
             f"[3] manifest ({args.manifest_mode}) -> [4] audit")
@@ -255,7 +262,7 @@ def warm(ctx, dry_run):
     config, output_dir = ctx["config"], ctx["output_dir"]
     state_db = config.get("igvf", {}).get("state_db_path")
     if not state_db:
-        raise SystemExit("igvf.state_db_path is required in default mode")
+        raise SystemExit("igvf.state_db_path is required in default/reformat_only mode")
 
     from igvf_metadata import cell_metadata, state
 
@@ -493,7 +500,7 @@ def main():
     degraded = []
     reformat_eligible = set()
 
-    if mode == "default":
+    if mode in ("default", "reformat_only"):
         stage_header(1, "warm the CellAnnotation cache")
         fetch_ok, statuses = warm(ctx, args.dry_run)
         if not fetch_ok:
@@ -505,7 +512,7 @@ def main():
         fetch_ok = True
 
     ctx["manifest_ready"] = ctx["manifest_eligible"] & reformat_eligible
-    if mode == "default":
+    if mode in ("default", "reformat_only"):
         log(f"manifest-ready      : {len(ctx['manifest_ready'])} of "
             f"{len(ctx['manifest_eligible'])} manifest-eligible")
 
@@ -530,15 +537,18 @@ def main():
         # the state this deletion exists to prevent: a snapshot on disk that a later
         # bare `snakemake` would happily consume while still inside its freshness
         # window, with nobody having warmed the cache for that invocation.
-        if mode == "default":
+        if mode in ("default", "reformat_only"):
             for path in snapshot_paths:
                 if cas.remove_snapshot(path):
                     log(f"removed temp snapshot {path}")
 
     problems = []
-    if mode != "default":
+    if mode == "local_only":
         stage_header(3, "manifest", "SKIPPED (local_only)")
         stage_header(4, "audit", "SKIPPED (local_only)")
+    elif mode == "reformat_only":
+        stage_header(3, "manifest", "SKIPPED (reformat_only: manifest generation deferred)")
+        stage_header(4, "audit", "SKIPPED (reformat_only: manifest generation deferred)")
     elif args.dry_run:
         stage_header(3, "manifest", "SKIPPED (dry run)")
         stage_header(4, "audit", "SKIPPED (dry run)")

@@ -212,10 +212,16 @@ for _stats_dataset in config["clusters"]:
 #                 a following target path (a real 5.5-hour incident).
 #   default    -- the above PLUS portal-format reformatting, for clusters the
 #                 driver's warm stage resolved a CellAnnotation for.
+#   reformat_only -- same reformatting/CellAnnotation behavior as default, but
+#                 the driver (run_pipeline.py) skips IGVF manifest generation
+#                 and audit (stages 3-4). Snakemake itself treats it exactly
+#                 like default -- the distinction is driver-side only.
 # ---------------------------------------------------------------------------
 PIPELINE_MODE = config.get("pipeline_mode", "default")
-if PIPELINE_MODE not in ("default", "local_only"):
-    raise ValueError(f"pipeline_mode must be 'default' or 'local_only', got {PIPELINE_MODE!r}")
+if PIPELINE_MODE not in ("default", "local_only", "reformat_only"):
+    raise ValueError(
+        f"pipeline_mode must be 'default', 'local_only', or 'reformat_only', got {PIPELINE_MODE!r}"
+    )
 
 # CellAnnotation-based reformat eligibility: a quality-passing cluster missing
 # CellAnnotation still gets full predictions/candidates/features -- it's just not
