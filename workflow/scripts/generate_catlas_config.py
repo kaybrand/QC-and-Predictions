@@ -193,6 +193,18 @@ def parse_args(argv=None):
                    help="ledger dataset label AND the config's dataset key (default catlas-human)")
     p.add_argument("--out", required=True)
     p.add_argument(
+        "--include-portal-flagged", action="store_true",
+        help="also include clusters whose fragments file the Portal REJECTED "
+             "(review_reasons contains 'upload_status:'). For CATlas that rejection is "
+             "content_md5sum duplication -- the bytes downloaded and md5-verified fine, so the "
+             "file is usable input. Off by default because a future flag might mean something "
+             "genuinely broken rather than merely duplicated. Turned ON for catlas-human as of "
+             "2026-09-04: duplicates are accepted (the submitting lab says either version may be "
+             "used), so excluding a usable supercluster while keeping a comparable one was an "
+             "inconsistency in the delivered set. See "
+             ".baton/2026-09-04-duplicate-fragment-files.md.",
+    )
+    p.add_argument(
         "--clusters", default=None,
         help="comma-separated cluster names to restrict to, for a small rehearsal config. The "
              "dataset KEY is unchanged, so a test config writes into the same results tree as the "
@@ -243,7 +255,7 @@ def _existing_download_root(path):
     return None
 
 
-def load_clusters(conn, dataset):
+def load_clusters(conn, dataset, include_portal_flagged=False):
     """(clusters, skipped) from the ledger. clusters is [(name, local_path)]."""
     rows = conn.execute(
         "SELECT annotation, local_path, download_state, review_reasons, accession "
@@ -257,7 +269,7 @@ def load_clusters(conn, dataset):
         if state != "done":
             skipped.append((annotation, accession, f"download_state={state}"))
             continue
-        if "upload_status:" in reasons:
+        if "upload_status:" in reasons and not include_portal_flagged:
             # Portal-rejected. For CATlas this is content_md5sum duplication --
             # the file is byte-valid but duplicates another cluster's fragments.
             skipped.append((annotation, accession, f"portal-rejected ({reasons})"))
@@ -273,7 +285,7 @@ def main(argv=None):
     args = parse_args(argv)
     repo = args.repo or os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     conn = sqlite3.connect(args.state_db)
-    clusters, skipped = load_clusters(conn, args.dataset)
+    clusters, skipped = load_clusters(conn, args.dataset, args.include_portal_flagged)
     conn.close()
 
     if not clusters:
