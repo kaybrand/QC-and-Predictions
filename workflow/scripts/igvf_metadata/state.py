@@ -141,6 +141,35 @@ CREATE TABLE IF NOT EXISTS cell_metadata_principal_pseudobulks (
     fetched_at TEXT NOT NULL
 );
 
+-- Every yang-li-lab PseudobulkSet the CATlas-scoped multireport GET ever
+-- returned (2026-09-16), saved unconditionally, regardless of species or of
+-- which clusters any particular pipeline config is currently processing --
+-- see cell_metadata.py's module docstring for why CATlas gets its own single
+-- raw-cache table instead of being folded into the primary/principal split
+-- above. That split exists for the IGVF-native unified-processing pipeline,
+-- where a cluster is assembled from several raw per-Sample primaries and a
+-- separate principal upload may later "lock in" its Cell Annotation. CATlas
+-- has neither: each cluster is already a single, uniquely-aliased, curated
+-- PseudobulkSet -- the SAME PseudobulkSet whose fragments file this pipeline
+-- downloads and runs scE2G against directly, not raw material assembled
+-- into something else. One row per (dataset, cluster), dataset always
+-- "catlas-{species}" (e.g. "catlas-human", "catlas-mouse"), parsed from the
+-- PseudobulkSet's own alias.
+CREATE TABLE IF NOT EXISTS cell_metadata_catlas_pseudobulks (
+    dataset TEXT NOT NULL,
+    cluster TEXT NOT NULL,
+    alias TEXT NOT NULL,
+    cell_annotation TEXT,
+    cl_id TEXT,
+    term_id TEXT,
+    term_name TEXT,
+    cell_qualifier TEXT,
+    portal_id TEXT,
+    status TEXT,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (dataset, cluster)
+);
+
 -- Portal File objects belonging to PRIMARY pseudobulk sets, and the state of
 -- downloading each one (2026-08-17). See portal_files.py for the discovery
 -- query and download_portal_pseudobulks.py for the fetch loop.
@@ -453,6 +482,33 @@ def upsert_principal_pseudobulk(conn, alias, cell_annotation, now):
 
 def all_principal_pseudobulks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_principal_pseudobulks").fetchall()]
+
+
+def upsert_catlas_pseudobulk(
+    conn, dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now
+):
+    with transaction(conn):
+        conn.execute(
+            """INSERT INTO cell_metadata_catlas_pseudobulks
+               (dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id,
+                status, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(dataset, cluster) DO UPDATE SET
+                   alias=excluded.alias,
+                   cell_annotation=excluded.cell_annotation,
+                   cl_id=excluded.cl_id,
+                   term_id=excluded.term_id,
+                   term_name=excluded.term_name,
+                   cell_qualifier=excluded.cell_qualifier,
+                   portal_id=excluded.portal_id,
+                   status=excluded.status,
+                   fetched_at=excluded.fetched_at""",
+            (dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now),
+        )
+
+
+def all_catlas_pseudobulks(conn):
+    return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_catlas_pseudobulks").fetchall()]
 
 
 _PORTAL_FILE_FIELDS = (

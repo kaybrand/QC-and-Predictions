@@ -119,6 +119,45 @@ _MULTIREPORT_QUERY = (
     "&field=input_file_sets&field=lab&field=samples&field=status"
 )
 
+# CATlas (Yang Li lab) PseudobulkSets: a separate multireport query, lab-scoped
+# rather than portal-wide, because these are single-tier curated sets (see
+# cell_metadata_catlas_pseudobulks' own docstring) that the generic
+# _MULTIREPORT_QUERY's primary/principal classification (pseudobulk_sets.classify)
+# was never designed for -- confirmed 2026-09-16: of 627 real CATlas PseudobulkSets,
+# only 61 surfaced via the generic query's "principal" branch (the rest never
+# reached the raw cache at all), and even those 61 cannot be *derived* into
+# cell_annotations without a subsample/qc_guide, which CATlas clusters don't have.
+_CATLAS_LAB_ID = "/labs/yang-li/"
+_CATLAS_MULTIREPORT_QUERY = (
+    "type=PseudobulkSet&status%21=deleted&lab.%40id=%2Flabs%2Fyang-li%2F&limit=all"
+    "&field=%40id&field=aliases&field=cell_annotation&field=cell_qualifier&field=cell_type"
+    "&field=cell_type.term_name&field=cell_type.term_id&field=status"
+)
+
+# The fixed marker in every CATlas PseudobulkSet alias, e.g.
+# "yang-li:catlas-human-pseudobulk-supercluster-Deep-layer_near-projecting".
+# Splitting on this exact substring -- not the last hyphen -- is load-bearing:
+# 28 of the 258 human cluster names contain their OWN internal hyphens (e.g.
+# "supercluster-Deep-layer_corticothalamic_and_6b"), which rsplit("-", 1) would
+# truncate down to just "6b". Confirmed 2026-09-16 against all 627 real aliases
+# (258 human + 369 mouse): zero parse failures with this marker.
+_CATLAS_ALIAS_MARKER = "-pseudobulk-"
+
+
+def _catlas_dataset_and_cluster_from_alias(alias):
+    """"yang-li:catlas-human-pseudobulk-EMSN_234" -> ("catlas-human", "EMSN_234").
+    Raises ValueError (loud, never silently skipped) if the marker is missing --
+    a future alias convention change must be seen and handled deliberately."""
+    suffix = alias.split(":", 1)[-1]
+    if _CATLAS_ALIAS_MARKER not in suffix:
+        raise ValueError(f"alias {alias!r} has no {_CATLAS_ALIAS_MARKER!r} marker -- convention may have changed")
+    prefix, cluster = suffix.split(_CATLAS_ALIAS_MARKER, 1)
+    if not prefix.startswith("catlas-"):
+        raise ValueError(f"alias {alias!r}'s prefix {prefix!r} doesn't start with 'catlas-'")
+    species = prefix[len("catlas-"):]
+    return f"catlas-{species}", cluster
+
+
 _SHAREABLE_COLUMNS = [
     "dataset",
     "cluster",
@@ -343,6 +382,51 @@ def fetch_if_stale(conn, reader):
         f"saved {saved_primary_count} primary pseudobulk row(s) ({skipped_no_alias} skipped for lacking an alias) "
         f"and {saved_principal_count} principal pseudobulk row(s) to the raw cache"
     )
+
+    # CATlas: a second wholesale GET, lab-scoped rather than portal-wide, and saved
+    # to its own single-tier raw table -- see _CATLAS_MULTIREPORT_QUERY's own
+    # comment for why the generic query/classify() above can't be reused for these.
+    # Gated by the SAME staleness check as the block above (one fetch_if_stale call,
+    # one TTL) rather than a second TTL row: simpler, and it directly satisfies the
+    # actual goal -- one wholesale GET per stale cache covers every species'
+    # PseudobulkSets, so no later run ever re-GETs just because it names a
+    # different subset of clusters.
+    catlas_rows = reader.get_multireport(_CATLAS_MULTIREPORT_QUERY)
+    saved_catlas_count = 0
+    catlas_parse_errors = []
+    for row in catlas_rows:
+        aliases = row.get("aliases") or []
+        alias = aliases[0] if aliases else None
+        if not alias:
+            continue
+        try:
+            dataset, cluster = _catlas_dataset_and_cluster_from_alias(alias)
+        except ValueError as e:
+            catlas_parse_errors.append((alias, str(e)))
+            continue
+        # Saved unconditionally, for EVERY species and EVERY cluster the portal
+        # returns -- not scoped to this run's cluster_keys. See derive_scopes'
+        # own docstring for why: a cluster's Cell Annotation here is a direct,
+        # unambiguous 1:1 lookup (CATlas never merges primary pseudobulks), so
+        # there is no reason to withhold any of it from the cache.
+        cell_type = row.get("cell_type")
+        state.upsert_catlas_pseudobulk(
+            conn, dataset, cluster, alias,
+            cell_annotation=row.get("cell_annotation"),
+            cl_id=_cl_id_from_cell_type(cell_type),
+            term_id=_term_id_from_cell_type(cell_type),
+            term_name=_term_name_from_cell_type(cell_type),
+            cell_qualifier=row.get("cell_qualifier"),
+            portal_id=row.get("@id"),
+            status=row.get("status"),
+            now=now,
+        )
+        saved_catlas_count += 1
+    if catlas_parse_errors:
+        log(f"{len(catlas_parse_errors)} CATlas PseudobulkSet alias(es) could not be parsed -- NOT cached:")
+        for alias, why in catlas_parse_errors:
+            log(f"  {alias}: {why}")
+    log(f"saved {saved_catlas_count} CATlas PseudobulkSet row(s) (every species) to the raw cache")
     return True
 
 
@@ -370,8 +454,58 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
     docstring for why those two anomalies get different treatment.
     """
     now = _now()
-    local_by_scope, unreadable = _local_subsamples(cluster_keys, cluster_configs)
+
+    # CATlas-style clusters (an `atac_frag_file` marker instead of qc_guide/
+    # pseudobulk_annotation -- see this module's docstring and
+    # cell_metadata_catlas_pseudobulks' own) have no subsample concept at all,
+    # so they never go through _local_subsamples/the primary-alias-suffix join
+    # below. Derive ALL of them from the raw cache first, unconditionally --
+    # every (dataset, cluster) the last fetch_if_stale call found, not just
+    # this call's cluster_keys, so a later pipeline config covering a
+    # different subset of CATlas clusters (e.g. a smaller rehearsal config)
+    # never needs its own re-derivation pass, and every already-downloaded
+    # species gets annotated regardless of which one this run's config
+    # happens to be processing.
+    for row in state.all_catlas_pseudobulks(conn):
+        state.upsert_cell_annotation(
+            conn, row["dataset"], row["cluster"],
+            cell_annotation=row.get("cell_annotation") or "",
+            cl_id=row.get("cl_id") or "TODO: ontology_id (not returned by portal)",
+            term_id=row.get("term_id") or "TODO: ontology_id (not returned by portal)",
+            term_name=row.get("term_name") or row.get("cell_annotation") or "",
+            cell_qualifier=row.get("cell_qualifier"),
+            portal_samples=row.get("portal_id") or "",
+            all_primary_released=(row.get("status") == "released"),
+            principal_uploaded=False,
+            principal_alias=None,
+            now=now,
+        )
+
+    catlas_keys = {(d, c) for d, c in cluster_keys if "atac_frag_file" in cluster_configs[(d, c)]}
+    native_keys = cluster_keys - catlas_keys
+
     statuses = []
+    for dataset, cluster in sorted(catlas_keys):
+        row = state.get_cell_annotation(conn, dataset, cluster)
+        if row:
+            statuses.append(
+                {
+                    "dataset": dataset, "cluster": cluster, "resolved": True,
+                    "reason": "ok", "cell_annotation": row["cell_annotation"],
+                }
+            )
+        else:
+            reason = "no_catlas_pseudobulk_match"
+            log(
+                f"{dataset}/{cluster}: {reason} -- no PseudobulkSet with a matching alias was found in the "
+                "last catlas multireport fetch (fetch_if_stale first, or check the cluster name against the "
+                "portal's own alias)"
+            )
+            statuses.append(
+                {"dataset": dataset, "cluster": cluster, "resolved": False, "reason": reason, "cell_annotation": None}
+            )
+
+    local_by_scope, unreadable = _local_subsamples(native_keys, cluster_configs)
     for (dataset, cluster), reason in sorted(unreadable.items()):
         log(f"{dataset}/{cluster}: {reason} -- cannot derive this scope's Cell Annotation")
         statuses.append(
@@ -560,7 +694,7 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
     if unmatched:
         log(
             f"{len(unmatched)} cached primary pseudobulk(s) whose alias didn't match any local "
-            f"(dataset, cluster, subsample) candidate among the {len(cluster_keys)} scope(s) requested "
+            f"(dataset, cluster, subsample) candidate among the {len(native_keys)} scope(s) requested "
             f"here -- still in the raw cache, just not part of any of THESE clusters' derived groups "
             f"(another dataset's own derive_scopes call will pick up the ones that belong to it)"
         )
