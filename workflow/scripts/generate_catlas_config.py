@@ -219,9 +219,12 @@ def parse_args(argv=None):
              "failing that, inferred from the ledger's own local_path values.",
     )
     p.add_argument("--repo", default=None, help="repo root; defaults to two levels above this script")
-    p.add_argument("--pipeline-mode", default="local_only", choices=("local_only", "default"),
-                   help="local_only (default) makes no Portal contact and requests no reformat "
-                        "targets -- the right mode for a first predictions-only run")
+    p.add_argument(
+        "--pipeline-mode", default="local_only", choices=("local_only", "default", "reformat_only"),
+        help="local_only (default) makes no Portal contact and requests no reformat targets -- the "
+             "right mode for a first predictions-only run. reformat_only warms the CellAnnotation "
+             "cache and reformats like default, but skips IGVF manifest generation.",
+    )
     p.add_argument("--min-cell-count", type=int, default=100)
     p.add_argument("--min-fragments-total", type=int, default=2_000_000)
     p.add_argument("--max-cell-count", type=int, default=20000)
@@ -350,13 +353,22 @@ def main(argv=None):
             "pass --download-root to match the ledger."
         )
 
-    mode_note = (
-        "local_only: no IGVF Portal contact at any stage, and no reformat targets "
-        "(REFORMAT_ELIGIBLE_CLUSTERS is empty by construction). Predictions + QC only."
-        if args.pipeline_mode == "local_only" else
-        "default: warms the CellAnnotation cache and builds manifests. Requires "
-        "every cluster to be Portal-annotated."
-    )
+    if args.pipeline_mode == "local_only":
+        mode_note = (
+            "local_only: no IGVF Portal contact at any stage, and no reformat targets "
+            "(REFORMAT_ELIGIBLE_CLUSTERS is empty by construction). Predictions + QC only."
+        )
+    elif args.pipeline_mode == "reformat_only":
+        mode_note = (
+            "reformat_only: warms the CellAnnotation cache and reformats predictions into "
+            "portal format, same as default -- but the driver (run_pipeline.py) skips IGVF "
+            "manifest generation and audit (stages 3-4)."
+        )
+    else:
+        mode_note = (
+            "default: warms the CellAnnotation cache and builds manifests. Requires "
+            "every cluster to be Portal-annotated."
+        )
     skipped_note = ""
     if skipped:
         skipped_note = "#\n# SKIPPED, and why (see the generator's stderr for the full list):\n" + "".join(
