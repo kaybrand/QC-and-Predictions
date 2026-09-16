@@ -10,7 +10,7 @@ guide file, if any, was used to resolve that row.
 Deliberately standalone -- no dependency on this repo's own
 workflow/scripts/igvf_metadata/ package, so this one file (plus the
 IGVF_GET_REQUEST_USER_GUIDE.md next to it) can be copied out and sent on its
-own. It mirrors (does not import) three pieces of that package, credited
+own. It mirrors (does not import) four pieces of that package, credited
 here so the two can be kept in sync if the portal's own schema changes:
   - the multireport GET (query string + auth pattern):
     workflow/scripts/igvf_metadata/portal_client.py's PortalReader.get_multireport
@@ -22,6 +22,36 @@ here so the two can be kept in sync if the portal's own schema changes:
   - the most-contributing-subsample tie-break and its subsample-frequency
     source (only used in QC-guide mode, see below):
     subsamples.py's subsamples_by_frequency and cell_metadata.refresh_if_stale.
+  - CATlas (Yang Li lab) PseudobulkSets (2026-09-16): cell_metadata.py's
+    _CATLAS_MULTIREPORT_QUERY (lab-scoped GET) and
+    _catlas_dataset_and_cluster_from_alias (the "-pseudobulk-"-marker alias
+    split) -- see CATLAS section below for why these need their own path
+    entirely, distinct from primary/principal classification.
+
+CATLAS. CATlas clusters never appear via the primary/principal path above:
+classify() puts every one of them in the "principal" bucket (their
+input_file_sets are curated pseudobulk-sets, not per-Sample analysis-sets),
+and even a "principal" row here is only ever used for CellAnnotation
+cross-checking, never turned into its own report row. Worse, the generic,
+portal-wide MULTIREPORT_QUERY (no lab filter) doesn't reliably surface every
+CATlas PseudobulkSet at all -- confirmed 2026-09-16: of 627 real CATlas
+PseudobulkSets, that query's "principal" classification only ever caught 61.
+So CATlas gets its OWN wholesale GET, scoped to lab.@id=/labs/yang-li/ (every
+species: 258 human + 369 mouse as of 2026-09-16, zero unparseable aliases),
+and its own row-collection function (collect_catlas_rows) that builds
+Dataset_Cluster groups directly from each PseudobulkSet's own alias --
+dataset is "catlas-{species}", never "igvfN", so these rows can never
+collide with the primary/principal path's own groups. No --qc-guide-dir
+lookup ever applies to them (CATlas clusters have no QC guide at all,
+confirmed elsewhere in this repo -- workflow/rules/prefiltered_fragments.smk),
+so they always go through the same report-every-distinct-value shape mode 1
+uses, which is a correct (not merely a fallback) description of them: CATlas
+never merges primary pseudobulks, each cluster already is exactly one
+uniquely-aliased PseudobulkSet, so build_fallback_row's "distinct values
+across contributing primaries" logic trivially resolves to a single value
+per field. "Subsamples"/"N_Subsamples" don't have a real meaning for
+CATlas (no per-subsample breakdown exists), so that column carries the
+PseudobulkSet's own alias instead, and N_Subsamples is always 1.
 
 Never touches credentials beyond reading IGVF_API_KEY/IGVF_SECRET_KEY/
 IGVF_MODE from the environment (via igvf_utils) -- it never writes them
@@ -73,6 +103,26 @@ MULTIREPORT_QUERY = (
     "&field=input_file_sets&field=lab&field=samples&field=status"
 )
 
+# CATlas (Yang Li lab) PseudobulkSets: lab-scoped rather than portal-wide -- see
+# the module docstring's CATLAS section for why the query above can't be reused.
+# No input_file_sets/samples fields needed here (nothing to classify or count --
+# every row this returns IS its own dataset-cluster group), but cell_qualifier/
+# cell_type/status are still needed for the same reasons as the generic query.
+CATLAS_MULTIREPORT_QUERY = (
+    "type=PseudobulkSet&status%21=deleted&lab.%40id=%2Flabs%2Fyang-li%2F&limit=all"
+    "&field=%40id&field=aliases&field=cell_annotation&field=cell_qualifier&field=cell_type"
+    "&field=cell_type.term_name&field=cell_type.term_id&field=status"
+)
+
+# The fixed marker in every CATlas PseudobulkSet alias, e.g.
+# "yang-li:catlas-human-pseudobulk-supercluster-Deep-layer_near-projecting".
+# Splitting on this exact substring -- not the last hyphen -- is load-bearing:
+# several human cluster names contain their OWN internal hyphens (e.g.
+# "supercluster-Deep-layer_corticothalamic_and_6b"), which a naive rsplit("-", 1)
+# would truncate down to just "6b". Confirmed 2026-09-16 against all 627 real
+# CATlas aliases (258 human + 369 mouse): zero parse failures with this marker.
+CATLAS_ALIAS_MARKER = "-pseudobulk-"
+
 # Joins multi-value columns -- NOT a comma: cell_annotation/term_name are free-text
 # portal fields that routinely contain a literal comma themselves (confirmed against
 # real production data, e.g. cell_type.term_name "B cell, CD19-positive") -- joining
@@ -114,6 +164,95 @@ def fetch_multireport(igvf_mode):
     response = requests.get(url, auth=conn.auth, timeout=iu.TIMEOUT, headers=iuu.REQUEST_HEADERS_JSON)
     response.raise_for_status()
     return response.json()["@graph"]
+
+
+def fetch_catlas_multireport(igvf_mode):
+    """Same GET mechanism as fetch_multireport, lab-scoped query -- see
+    CATLAS_MULTIREPORT_QUERY's own comment for why this can't share the
+    generic query."""
+    import requests
+    import igvf_utils as iu
+    import igvf_utils.utils as iuu
+    from igvf_utils.connection import Connection
+
+    conn = Connection(igvf_mode=igvf_mode, no_log_file=True)
+    url = iuu.url_join([conn.igvf_mode.url, "multireport/?"]) + CATLAS_MULTIREPORT_QUERY
+    response = requests.get(url, auth=conn.auth, timeout=iu.TIMEOUT, headers=iuu.REQUEST_HEADERS_JSON)
+    response.raise_for_status()
+    return response.json()["@graph"]
+
+
+def catlas_dataset_and_cluster_from_alias(alias):
+    """"yang-li:catlas-human-pseudobulk-EMSN_234" -> ("catlas-human", "EMSN_234").
+    Returns (None, None) rather than raising -- collect_catlas_rows treats an
+    unparseable alias as "skip, report the count", the same discipline
+    collect_primary_rows already uses for its own unparseable aliases."""
+    suffix = alias.split(":", 1)[-1] if ":" in alias else alias
+    if CATLAS_ALIAS_MARKER not in suffix:
+        return None, None
+    prefix, cluster = suffix.split(CATLAS_ALIAS_MARKER, 1)
+    if not prefix.startswith("catlas-"):
+        return None, None
+    species = prefix[len("catlas-"):]
+    return f"catlas-{species}", cluster
+
+
+def collect_catlas_rows(rows, species=None):
+    """Every CATlas PseudobulkSet, one dataset-cluster group each -- shaped
+    identically to collect_primary_rows' return value ({dataset_cluster:
+    [members]}) so build_fallback_row/resolve_group need no CATlas-specific
+    branch at all: each group has exactly one member (CATlas never merges
+    primary pseudobulks), so build_fallback_row's "distinct values across
+    members" degenerates to that member's own values.
+
+    "subsample" is the PseudobulkSet's own alias, not a real sample/IVS
+    accession -- there is no per-subsample breakdown for CATlas, so this is
+    just a stable, unique per-row label for the Subsamples column.
+
+    species: optional, e.g. "human"/"mouse". Filtered client-side against
+    the species parsed out of each row's own alias -- the portal query has
+    no species/taxa field to filter on server-side (CATLAS_MULTIREPORT_QUERY
+    is lab-scoped only), so this can't be pushed into the GET itself.
+    Case-insensitive (the alias convention observed so far is lowercase, but
+    matching case-insensitively costs nothing and avoids a silent zero-row
+    result from e.g. "Human"). None (the default) keeps every species."""
+    by_group = {}
+    skipped_no_alias = 0
+    skipped_unparseable_alias = 0
+    skipped_other_species = 0
+    wanted = species.lower() if species else None
+    for row in rows:
+        aliases = row.get("aliases") or []
+        alias = aliases[0] if aliases else None
+        if not alias:
+            skipped_no_alias += 1
+            continue
+        dataset, cluster = catlas_dataset_and_cluster_from_alias(alias)
+        if dataset is None:
+            skipped_unparseable_alias += 1
+            continue
+        if wanted is not None and dataset.split("-", 1)[-1].lower() != wanted:
+            skipped_other_species += 1
+            continue
+        dataset_cluster = f"{dataset}-{cluster}"
+        by_group[dataset_cluster] = [
+            {
+                "subsample": alias,
+                "cell_annotation": row.get("cell_annotation"),
+                "term_id": _term_id_from_cell_type(row.get("cell_type")),
+                "term_name": _term_name_from_cell_type(row.get("cell_type")),
+                "cell_qualifier": row.get("cell_qualifier"),
+                "status": row.get("status"),
+            }
+        ]
+    log(
+        f"{len(rows)} total CATlas portal row(s) -> {len(by_group)} dataset-cluster group(s) "
+        f"({skipped_no_alias} skipped for lacking an alias, {skipped_unparseable_alias} for an alias "
+        f"not matching the catlas-{{species}}{CATLAS_ALIAS_MARKER}{{cluster}} convention"
+        + (f", {skipped_other_species} for species != {species!r}" if wanted is not None else "")
+        + ")"
+    )
+    return by_group
 
 
 def _classify(row):
@@ -413,6 +552,26 @@ def main():
             "instead. Never required, never causes a failure by itself."
         ),
     )
+    parser.add_argument(
+        "--skip-catlas",
+        action="store_true",
+        help=(
+            "Skip the second, lab-scoped GET for CATlas (Yang Li lab) PseudobulkSets. On by default "
+            "(i.e. CATlas rows ARE included) because the query is cheap, read-only, and additive -- "
+            "CATlas dataset-clusters (catlas-human-*, catlas-mouse-*) never collide with igvfN ones. "
+            "Never resolved via --qc-guide-dir: CATlas clusters have no QC guide at all."
+        ),
+    )
+    parser.add_argument(
+        "--species",
+        default=None,
+        help=(
+            "Optional, e.g. 'human' or 'mouse'. Restricts the CATlas (WashU) survey to that one "
+            "species -- default (unset) fetches and reports every species CATlas has (currently "
+            "human + mouse). Filtered client-side after the fetch (the portal query is lab-scoped "
+            "only, no species field to filter on server-side). Ignored with --skip-catlas."
+        ),
+    )
     args = parser.parse_args()
 
     log(
@@ -426,6 +585,19 @@ def main():
     log("issuing multireport GET against the IGVF Data Portal...")
     rows = fetch_multireport(args.igvf_mode)
     by_group = collect_primary_rows(rows)
+
+    if not args.skip_catlas:
+        log("issuing CATlas (lab-scoped) multireport GET against the IGVF Data Portal...")
+        catlas_rows = fetch_catlas_multireport(args.igvf_mode)
+        catlas_by_group = collect_catlas_rows(catlas_rows, species=args.species)
+        overlap = set(by_group) & set(catlas_by_group)
+        if overlap:
+            # Should be impossible (catlas-* dataset keys vs igvfN ones), but a
+            # silent merge collision would be worse than a loud one -- see this
+            # function's own discipline for every other anomaly it can hit.
+            raise SystemExit(f"{len(overlap)} dataset-cluster key(s) exist in both surveys: {sorted(overlap)[:5]}")
+        by_group.update(catlas_by_group)
+
     report_rows = build_report_rows(by_group, args.qc_guide_dir)
     write_tsv(report_rows, args.output)
     log(f"wrote {args.output}")
