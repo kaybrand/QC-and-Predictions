@@ -56,7 +56,10 @@ HEADER_FIELDS = {
 
 # Reformatted outputs carry the header; scE2G's own outputs do not. Matched by
 # suffix against the `{dataset}_{cluster}_` prefix the reformat rules use.
-REFORMAT_SUFFIXES = (".e2g.tsv.gz", "_element_list.bed.gz", "_gene_list.tsv.gz")
+# "_gene_list.tsv.gz" removed 2026-09-25: reformat_gene_list was retired along
+# with Prediction Tabular Files' "genes" variant, so no such file is a live
+# pipeline output any more to stale-check.
+REFORMAT_SUFFIXES = (".e2g.tsv.gz", "_element_list.bed.gz")
 
 
 def embedded_header(path):
