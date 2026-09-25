@@ -6,17 +6,21 @@ required for both models, per the 2026-07-10 design conversation).
 
 2026-09-25: the "genes" variant (content_type "gene quantifications") is
 retired -- gene quantifications are no longer a pipeline project. scE2G
-predictions already score the full candidate-gene universe, and E2G Scores
-for candidate links involving a gene with < 1 TPM are zero-ed out
-downstream, so a separate per-cluster gene list file added nothing IGVF
-didn't already have via the fixed, externally-curated
-jesse-engreitz:sce2g_gencode_v43_gene_list. Every Multiome "full" row's
-derived_from now references that fixed alias (refs.gene_list_alias) in
-place of the old per-(dataset,cluster) "...predictions_genes" alias -- see
-_full_row. The reformat.smk rule that produced
-{cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz
-(reformat_gene_list) is removed along with it; that file is no longer a
-pipeline output target.
+predictions already score the full candidate-gene universe, and links
+involving a gene that wasn't actually scored are excluded downstream (TPM
+filtering for Multiome; considered_for_predictions for scATAC), so a
+separate per-cluster gene list file added nothing IGVF didn't already have
+via the fixed, externally-curated jesse-engreitz:sce2g_gencode_v43_gene_list.
+Every "full" row's derived_from -- both families, CATlas included -- now
+references that fixed alias (refs.gene_list_alias) in place of the old
+per-(dataset,cluster) "...predictions_genes" alias -- see _full_row. The
+reformat.smk rules that produced a per-cluster gene list file
+({cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz via
+reformat_gene_list for Multiome, and CATlas's own
+{cluster_dir}/{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_gene_list.tsv.gz
+via reformat_gene_list_from_predictions for scATAC) are removed along with
+it; no per-cluster gene list is a pipeline output target any more, for
+either family.
 
 Upload order within this table, driven by depends_on:
     elements_bed  (no dependency on sibling prediction rows)
@@ -198,20 +202,31 @@ def _requires(path_fn):
 
 
 def _full_row(ctx):
-    # Confirmed 2026-07-16: RNA count matrix + gene list are Multiome-only data
-    # points -- a scATAC full's derived_from omits both, even though ATAC
-    # fragment file + elements apply to both families. depends_on below
-    # mirrors this (only waits on the RNA count matrix being uploaded for
-    # Multiome; refs.gene_list_alias is a fixed external constant, so it
-    # needs no depends_on entry -- see its own docstring in refs.py).
+    # Confirmed 2026-07-16: the RNA count matrix is Multiome-only -- a scATAC
+    # full's derived_from omits it, even though ATAC fragment file + elements
+    # apply to both families. depends_on below mirrors this (only waits on
+    # the RNA count matrix being uploaded for Multiome).
+    #
+    # refs.gene_list_alias, by contrast, is referenced by BOTH families
+    # (2026-09-25, CATlas): the reasoning that retired Multiome's per-cluster
+    # "genes" TabularFile -- scE2G predictions already score the full
+    # candidate-gene universe, and downstream filtering (TPM for Multiome,
+    # considered_for_predictions for scATAC) zeroes out or excludes the rest,
+    # so a precise per-cluster "which genes were scored" listing adds nothing
+    # -- applies just as well to scATAC. CATlas's own
+    # reformat_gene_list_from_predictions (which built exactly that precise
+    # per-cluster listing from the predictions file) is retired alongside it.
+    # It needs no depends_on entry for either family, since it names an
+    # already-existing, externally-managed Portal object this pipeline never
+    # creates -- see its own docstring in refs.py.
     parts = [
         refs.trained_model_file_alias(ctx),  # derived_from wants the FILE, not the Set
         refs.atac_fragment_alias(ctx),
         build_alias(ctx, "elements_bed"),
+        refs.gene_list_alias(ctx),
     ]
     if family(ctx.model) == "Multiome":
         parts.append(refs.rna_matrix_alias(ctx))
-        parts.append(refs.gene_list_alias(ctx))
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
