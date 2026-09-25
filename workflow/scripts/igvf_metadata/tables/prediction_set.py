@@ -3,11 +3,18 @@ output for one (dataset, cluster, model) on the IGVF Data Portal. Every
 other table's file_set points at this table's alias; see
 igvf_metadata.refs.prediction_set_alias, which delegates here.
 
-input_file_sets is fully resolved: exactly [trained_model_set_alias,
-principal_pseudobulk_set_alias]. _row() itself no longer raises -- but
-depends_on lists ("principal_pseudobulk_set", "") so real uploads still
-correctly wait for that object to actually exist on the portal before this
-one links to it.
+input_file_sets is fully resolved: [trained_model_set_alias,
+principal_pseudobulk_set_alias, gene_list_curated_set_alias]. _row() itself
+no longer raises -- but depends_on lists ("principal_pseudobulk_set", "")
+so real uploads still correctly wait for that object to actually exist on
+the portal before this one links to it.
+
+gene_list_curated_set_alias (added 2026-09-25, applies to every family, not
+just Multiome) is a fixed constant like trained_model_set_alias -- an
+already-existing, externally-curated Set this pipeline never creates, so it
+needs no depends_on entry of its own. See igvf_metadata.refs' module
+docstring for why it was added: Prediction Tabular Files' per-cluster
+"genes" variant was retired the same day.
 
 No derived_from field: the Prediction Set profile doesn't have one at all
 (confirmed 2026-08-05) -- it was previously duplicated here as a
@@ -65,6 +72,7 @@ def _row(ctx):
         "input_file_sets": [
             refs.trained_model_set_alias(ctx),  # the model Set, not the FILE derived_from-shaped fields use
             refs.principal_pseudobulk_set_alias(ctx),  # itself contains the RNA/ATAC files, "and more"
+            refs.gene_list_curated_set_alias(ctx),  # fixed external curated gene list Set, added 2026-09-25
         ],
         "documents": [
             make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_pdf"),
