@@ -1,17 +1,31 @@
 """Prediction Tabular Files -- object_type "tabular_file", scope
-cluster_model. Five content variants per (dataset, cluster, model): full,
-thresholded, bedpe, elements_bed, genes -- 10 rows per cluster once both scE2G
-Multiome and scATAC are configured for it (bedpe/elements_bed/genes are
+cluster_model. Four content variants per (dataset, cluster, model): full,
+thresholded, bedpe, elements_bed -- 8 rows per cluster once both scE2G
+Multiome and scATAC are configured for it (bedpe/elements_bed are
 required for both models, per the 2026-07-10 design conversation).
 
+2026-09-25: the "genes" variant (content_type "gene quantifications") is
+retired -- gene quantifications are no longer a pipeline project. scE2G
+predictions already score the full candidate-gene universe, and E2G Scores
+for candidate links involving a gene with < 1 TPM are zero-ed out
+downstream, so a separate per-cluster gene list file added nothing IGVF
+didn't already have via the fixed, externally-curated
+jesse-engreitz:sce2g_gencode_v43_gene_list. Every Multiome "full" row's
+derived_from now references that fixed alias (refs.gene_list_alias) in
+place of the old per-(dataset,cluster) "...predictions_genes" alias -- see
+_full_row. The reformat.smk rule that produced
+{cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz
+(reformat_gene_list) is removed along with it; that file is no longer a
+pipeline output target.
+
 Upload order within this table, driven by depends_on:
-    elements_bed, genes  (no dependency on sibling prediction rows)
+    elements_bed  (no dependency on sibling prediction rows)
               |
               v
-             full  (derived_from unconditionally lists elements_bed+genes'
-                     aliases now that they're required content, not
+             full  (derived_from unconditionally lists elements_bed's
+                     alias now that it's required content, not
                      optional -- confirmed 2026-07-16 -- so full's
-                     depends_on must actually wait on them being uploaded
+                     depends_on must actually wait on it being uploaded
                      first, not just check enabled(); the module docstring
                      described this ordering from the start but the
                      dependency itself was missing until now)
@@ -22,28 +36,25 @@ Upload order within this table, driven by depends_on:
               v
            bedpe
 
-All five also depend on the "prediction_set" table (needed for file_set) --
+All four also depend on the "prediction_set" table (needed for file_set) --
 see igvf_metadata.refs.prediction_set_alias for why using its (provisional,
 unconfirmed) alias formula now is still safe even though that table isn't
 registered yet: depends_on still gates real uploads on it, so this only
 replaces an "invalid" validation failure with a correctly-labeled
 "deferred" outcome.
 
-full/elements_bed/genes also need the ATAC fragment TabularFile / RNA count
+full/elements_bed also need the ATAC fragment TabularFile / RNA count
 matrix MatrixFile tables (for derived_from) -- resolved, routed through
 igvf_metadata.refs (refs.atac_fragment_alias / refs.rna_matrix_alias),
 which delegate to the real filtered_atac_fragment_file / filtered_rna_count_matrix
-TableSpecs (see refs.py's own docstring).
+TableSpecs (see refs.py's own docstring). refs.gene_list_alias, by contrast,
+is a fixed constant (like refs.trained_model_file_alias) -- no depends_on
+entry needed, since it names an already-existing, externally-managed Portal
+object this pipeline never creates.
 
-bedpe/elements_bed/genes path builders (2026-07-21 update): all three now
-resolve to real, already-produced pipeline outputs, and declare the same
-required_paths that full/thresholded do -- no other change needed.
-- genes: reformat.smk's own reformat_gene_list rule reformats the raw
-  {cluster_dir}/multiome_powerlaw_v3/scE2G_gene_list.tsv.gz scE2G output into
-  the consortium-standard
-  {cluster_dir}/{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz.
-  Multiome-only (RNA-derived), still gated on "multiome_powerlaw_v3 in
-  models" in get_reformat_output_files().
+bedpe/elements_bed path builders (2026-07-21 update): both now resolve to
+real, already-produced pipeline outputs, and declare the same required_paths
+that full/thresholded do -- no other change needed.
 - elements_bed (renamed from "elements" 2026-08-21, content itself reworked
   2026-08-19): NOT derived from any prediction -- confirmed on the IGVF Data
   Portal, elements are represented as an INPUT to the prediction file (the
@@ -58,9 +69,9 @@ required_paths that full/thresholded do -- no other change needed.
   bgzip+tabix-indexed, IGV/UCSC-loadable BED4 (ElementChr/Start/End/Name,
   Name = "{class}|{chr}:{start}-{end}", column header row "#"-commented).
   Deliberately NOT named with "multiome_v3" or any model tag, and NOT gated
-  on any model being present in get_reformat_output_files() (unlike genes
-  above) -- EnhancerList.bed exists for every reformat-eligible cluster
-  regardless of model, matching this table's "elements required for both
+  on any model being present in get_reformat_output_files() -- EnhancerList.bed
+  exists for every reformat-eligible cluster regardless of model, matching
+  this table's "elements required for both
   families" design (previously ungenerateable for scATAC-only clusters,
   since scE2G never writes scE2G_element_list.tsv.gz outside
   multiome_powerlaw_v3/). Variant renamed "elements" -> "elements_bed" (and
@@ -88,8 +99,7 @@ reference_files (added 2026-08-06): confirmed via a live upload test against
 the real portal to resolve an upload error on this object type. Fixed,
 content_type-keyed accessions -- not derived per-row -- so every
 "element to gene interactions"/"elements reference" row (full, thresholded,
-bedpe, elements_bed) gets the same 3, and every "gene quantifications" row
-(genes) gets the 1 that applies to it.
+bedpe, elements_bed) gets the same 3.
 """
 
 import glob
@@ -102,7 +112,6 @@ from ..context import make_alias
 TABLE_NAME = "prediction_tabular_files"
 
 _REFERENCE_FILES_ELEMENT_TO_GENE = ["IGVFFI7969JLFC", "IGVFFI0653VCGH", "IGVFFI9573KOZR"]
-_REFERENCE_FILES_GENE_QUANTIFICATIONS = ["IGVFFI9573KOZR"]
 
 # Extend as new models are added -- deliberately a lookup, not a string
 # transform, since "multiome_powerlaw_v3" -> "Multiome" but "scATAC_powerlaw_v3"
@@ -169,16 +178,12 @@ def _elements_bed_path(ctx):
     return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_element_list.bed.gz")
 
 
-def _genes_path(ctx):
-    return os.path.join(ctx.cluster_dir, f"{ctx.dataset}_{ctx.cluster}_scE2G_multiome_v3_gene_list.tsv.gz")
-
-
 def _requires(path_fn):
     """Declares the one pipeline output this variant describes. Replaces the old
     _existing_file_enabled() gate (2026-08-24): a missing file is now reported by
     the orchestrator as skipped-missing-file WITH the path, instead of collapsing
     into the same silent skipped-disabled bucket as a deliberate semantic
-    exclusion like "genes under scATAC".
+    exclusion (a variant's enabled() gate returning False).
 
     The old wrapper also carried an `except NotImplementedError: return False`
     clause, which was dead code -- refs.py's stubs were all resolved, so nothing
@@ -193,10 +198,12 @@ def _requires(path_fn):
 
 
 def _full_row(ctx):
-    # Confirmed 2026-07-16: RNA count matrix + genes are Multiome-only data
+    # Confirmed 2026-07-16: RNA count matrix + gene list are Multiome-only data
     # points -- a scATAC full's derived_from omits both, even though ATAC
     # fragment file + elements apply to both families. depends_on below
-    # mirrors this (only waits on "genes" being uploaded for Multiome).
+    # mirrors this (only waits on the RNA count matrix being uploaded for
+    # Multiome; refs.gene_list_alias is a fixed external constant, so it
+    # needs no depends_on entry -- see its own docstring in refs.py).
     parts = [
         refs.trained_model_file_alias(ctx),  # derived_from wants the FILE, not the Set
         refs.atac_fragment_alias(ctx),
@@ -204,7 +211,7 @@ def _full_row(ctx):
     ]
     if family(ctx.model) == "Multiome":
         parts.append(refs.rna_matrix_alias(ctx))
-        parts.append(build_alias(ctx, "genes"))
+        parts.append(refs.gene_list_alias(ctx))
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
@@ -282,20 +289,6 @@ def _elements_bed_row(ctx):
     }
 
 
-def _genes_row(ctx):
-    return {
-        "content_type": "gene quantifications",
-        "file_format": "tsv",
-        "description": f"Annotated genes in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
-        "file_format_specifications": [
-            make_alias(ctx.igvf, "gene_quantifications_file_format_specification_pdf"),
-            make_alias(ctx.igvf, "gene_quantifications_file_format_specification_md"),
-        ],
-        "reference_files": _REFERENCE_FILES_GENE_QUANTIFICATIONS,
-        "submitted_file_name": _genes_path(ctx),
-    }
-
-
 def _scope_fields(ctx):
     return {
         "md5sum": None,  # left blank; igvf_utils computes+fills it from submitted_file_name
@@ -309,19 +302,9 @@ def _dep(*extra):
     return lambda ctx: [("prediction_set", "")] + list(extra)
 
 
-def _genes_enabled(ctx):
-    # RNA count matrix + genes are Multiome-only data points (2026-07-16) --
-    # a real semantic gate, so a stray file at the expected path could never
-    # produce a "genes" row under scATAC. File existence is declared separately
-    # via required_paths, so "no gene list on disk" and "scATAC, so no gene list
-    # should exist" are reported as different outcomes rather than one bucket.
-    return family(ctx.model) == "Multiome"
-
-
 def _full_depends_on(ctx):
     deps = [("prediction_set", ""), ("filtered_atac_fragment_file", ""), (TABLE_NAME, "elements_bed")]
     if family(ctx.model) == "Multiome":
-        deps.append((TABLE_NAME, "genes"))
         deps.append(("filtered_rna_count_matrix", ""))
     return deps
 
@@ -364,13 +347,6 @@ TABLE = registry.register(
                 build_row=_elements_bed_row,
                 required_paths=_requires(_elements_bed_path),
                 depends_on=_dep(("filtered_atac_fragment_file", "")),
-            ),
-            registry.VariantSpec(
-                name="genes",
-                build_row=_genes_row,
-                enabled=_genes_enabled,
-                required_paths=_requires(_genes_path),
-                depends_on=_dep(("filtered_rna_count_matrix", "")),
             ),
         ],
     )
