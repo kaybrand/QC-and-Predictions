@@ -151,8 +151,9 @@ def summarize_manifest(coverage_rows, manifest_excluded, quality_pass, has_annot
     if not coverage_rows:
         return "not-generated", "", "", ""
 
-    # skipped-family-gated rows are correctly-absent by design (e.g. "genes" under
-    # scATAC), so they are neither expected nor a gap.
+    # skipped-family-gated rows are correctly-absent by design (a variant's
+    # enabled() gate returning False -- unused since Prediction Tabular Files'
+    # "genes" variant was retired 2026-09-25), so they are neither expected nor a gap.
     considered = [r for r in coverage_rows if r["outcome"] != "skipped-family-gated"]
     planned = [r for r in considered if r["outcome"] in _REAL_ROW_OUTCOMES]
     gaps = [r for r in considered if r["outcome"] not in _REAL_ROW_OUTCOMES]

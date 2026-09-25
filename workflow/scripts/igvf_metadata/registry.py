@@ -3,7 +3,7 @@
 Each table is one TableSpec: a portal object type, a scope (one row-group
 per cluster, or per cluster+model), a handful of field layers merged in a
 fixed order, and a list of VariantSpecs -- the actual row-producing units
-within that table (e.g. "full"/"thresholded"/"bedpe"/"elements"/"genes" for
+within that table (e.g. "full"/"thresholded"/"bedpe"/"elements_bed" for
 Prediction Tabular Files).
 
 Field layering (see orchestrator.build_payload):
@@ -34,8 +34,9 @@ class VariantSpec:
     name: str
     build_row: Callable  # (ctx) -> dict[str, Any]
     # SEMANTIC gate only: "should this row exist at all for this scope", e.g. a
-    # family check ("genes" is Multiome-only). Must NOT be used for file-existence
-    # checks -- see required_paths.
+    # family check (no current variant uses one -- Prediction Tabular Files'
+    # "genes" was the only user, retired 2026-09-25). Must NOT be used for
+    # file-existence checks -- see required_paths.
     enabled: Callable = lambda ctx: True  # (ctx) -> bool
     # (ctx) -> list[str]: pipeline output files this row describes and cannot be
     # built without. Checked by the orchestrator, NOT by enabled(), so that a
