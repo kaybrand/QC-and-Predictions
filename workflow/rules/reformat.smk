@@ -1,18 +1,25 @@
 """
 Reformat scE2G predictions/lists into the standard sharing format.
 
-Adapted from IGVF/workflow/rules/reformat.smk: reformat_predictions,
-reformat_predictions_thresholded, and reformat_gene_list (originally one
-{meta}-wildcarded reformat_lists rule shared with elements, split 2026-08-19
+Adapted from IGVF/workflow/rules/reformat.smk: reformat_predictions and
+reformat_predictions_thresholded (originally one {meta}-wildcarded
+reformat_lists rule shared with elements and gene lists, split 2026-08-19
 once elements stopped being an update_scE2G_pred_formats.R output -- see
 reformat_element_list below) are unchanged in logic -- model is already a
 wildcard and update_scE2G_pred_formats.R already branches on
 `grepl("ATAC", opt$method)`, so no forking was needed here (unlike
-candidates_features.smk). The `update_*` Synapse-upload rules from the
-original file are intentionally not carried over -- Synapse upload for this
-pipeline is handled by synapse_manifest.smk instead. Thresholds come from
-get_model_threshold() (reads models/{model}/score_threshold_*) instead of a
-static config['models'] dict.
+candidates_features.smk). The gene-list half of that split -- reformat_gene_list
+(Multiome, reading the RNA-derived scE2G_gene_list) and this branch's own
+reformat_gene_list_from_predictions (scATAC, reading the predictions'
+actually-scored genes) -- was retired 2026-09-25: gene quantifications are no
+longer a pipeline output for either family, since every "full" row's
+derived_from now references one fixed, externally-curated gene list alias
+instead (see igvf_metadata/tables/prediction_tabular_files.py's module
+docstring). The `update_*` Synapse-upload rules from the original file are
+intentionally not carried over -- Synapse upload for this pipeline is handled
+by synapse_manifest.smk instead. Thresholds come from get_model_threshold()
+(reads models/{model}/score_threshold_*) instead of a static config['models']
+dict.
 
 RESULTS_DIR_BASE here is the dataset-AGNOSTIC parent
 (scE2G_dir/results/uniformly_processed) -- {dataset} is a genuine,
@@ -136,19 +143,9 @@ def get_reformat_output_files():
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.e2g.tsv.gz"))
         # element_list sources from Neighborhoods/EnhancerList.bed (see
         # reformat_element_list below), which every reformat-eligible cluster
-        # has regardless of model -- not gated on "multiome_powerlaw_v3 in
-        # models" like gene_list below, which needs Multiome's own RNA-derived
-        # scE2G_gene_list.tsv.gz.
+        # has regardless of model.
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz"))
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz.tbi"))
-        if "multiome_powerlaw_v3" in models:
-            files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz"))
-        if "scATAC_powerlaw_v3" in models:
-            # scATAC gets a gene list too (see reformat_gene_list_from_predictions),
-            # built from the predictions rather than from Multiome's RNA-derived
-            # scE2G_gene_list -- so this is gated on its own model, not shared with
-            # the multiome branch above.
-            files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_gene_list.tsv.gz"))
     return files
 
 
@@ -223,107 +220,6 @@ rule reformat_predictions_thresholded:
         """
 
 
-rule reformat_gene_list:
-    input:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "multiome_powerlaw_v3", "scE2G_gene_list.tsv.gz"),
-    output:
-        os.path.join(RESULTS_DIR_BASE, "{dataset}", "{cluster}", "{dataset}_{cluster}_scE2G_multiome_v3_gene_list.tsv.gz"),
-    params:
-        model="multiome_powerlaw_v3",
-        version=config["scE2G_version"],
-        assays=ASSAY_TITLE,
-        name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
-        term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
-        summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
-        # "genes" is Prediction Tabular Files' own variant naming (plural).
-        portal_link=lambda wildcards: portal_link_alias(
-            wildcards.dataset, wildcards.cluster, "multiome_powerlaw_v3", "genes",
-        ),
-    conda:
-        "../envs/e2g_jamboree_env.yml"
-    resources:
-        mem_mb=determine_mem_mb,
-    shell:
-        """
-        Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
-        --assays "{params.assays}" \
-        -i {input} \
-        -o {output} \
-        -c "{params.name}" \
-        -d "{params.term_id}" \
-        -s "{params.summary}" \
-        -m scE2G_{params.model} \
-        -v {params.version} \
-        -l "{params.portal_link}"
-        """
-
-
-rule reformat_gene_list_from_predictions:
-    """The scATAC gene list. Sourced from scE2G_predictions.tsv.gz, NOT from
-    scATAC_powerlaw_v3/scE2G_gene_list.tsv.gz (which does exist -- contrary to
-    the claim in igvf_metadata/tables/prediction_tabular_files.py that scE2G
-    writes a gene list only for Multiome).
-
-    Deliberately a separate rule from reformat_gene_list above rather than a
-    genericisation over {model}, because the two are not the same operation:
-      - multiome reads scE2G_gene_list and emits all 20531 annotated genes;
-      - this reads the predictions and emits only the genes actually SCORED
-        (14942 for catlas Bgl_51 -- exactly scE2G_gene_list's
-        considered_for_predictions=TRUE subset).
-    Merging them would hide that difference behind a wildcard. Multiome is also
-    never run on this branch, so nothing here can regress it.
-
-    processed_genes_file.bed is the second input purely for GeneStrand: no
-    scE2G_predictions file carries strand in either model family (multiome's 27
-    columns are a strict superset of scATAC's 20, and neither has it). It is a
-    cluster-level, sample-agnostic genome annotation -- byte-identical across
-    all 157 cluster directories checked -- so it adds nothing cluster-specific.
-    The R script hard-fails if the join is incomplete or if the two inputs
-    disagree on any gene's TSS."""
-    input:
-        predictions=os.path.join(
-            RESULTS_DIR_BASE, "{dataset}", "{cluster}", "scATAC_powerlaw_v3", "scE2G_predictions.tsv.gz",
-        ),
-        strand_annotation=os.path.join(
-            RESULTS_DIR_BASE, "{dataset}", "{cluster}", "processed_genes_file.bed",
-        ),
-    output:
-        os.path.join(
-            RESULTS_DIR_BASE, "{dataset}", "{cluster}",
-            "{dataset}_{cluster}_scE2G_scATAC_powerlaw_v3_gene_list.tsv.gz",
-        ),
-    params:
-        model="scATAC_powerlaw_v3",
-        version=config["scE2G_version"],
-        assays=ASSAY_TITLE,
-        name=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_name"],
-        term_id=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["term_id"],
-        summary=lambda wildcards: portal_cell_metadata(wildcards.dataset, wildcards.cluster)["cell_annotation"],
-        # "genes" is Prediction Tabular Files' own variant naming (plural).
-        portal_link=lambda wildcards: portal_link_alias(
-            wildcards.dataset, wildcards.cluster, "scATAC_powerlaw_v3", "genes",
-        ),
-    conda:
-        "../envs/e2g_jamboree_env.yml"
-    resources:
-        mem_mb=determine_mem_mb,
-    shell:
-        """
-        Rscript {workflow.basedir}/scripts/update_scE2G_pred_formats.R \
-        --assays "{params.assays}" \
-        --genes_from_predictions \
-        -i {input.predictions} \
-        --strand_annotation {input.strand_annotation} \
-        -o {output} \
-        -c "{params.name}" \
-        -d "{params.term_id}" \
-        -s "{params.summary}" \
-        -m scE2G_{params.model} \
-        -v {params.version} \
-        -l "{params.portal_link}"
-        """
-
-
 rule reformat_element_list:
     """Sources from Neighborhoods/EnhancerList.bed, NOT the multiome_powerlaw_v3
     predictions tree -- confirmed 2026-08-19 on the IGVF Data Portal, elements
@@ -338,7 +234,7 @@ rule reformat_element_list:
     just without the model-specific quantitative annotation (RPM/RPKM/
     activity_base/etc) that file also carries and that this output never
     wanted anyway. Hence no data.table/dplyr transform is needed here (unlike
-    reformat_gene_list) -- just the same portal-metadata header block
+    the now-retired reformat_gene_list rules) -- just the same portal-metadata header block
     update_scE2G_pred_formats.R assembles elsewhere, prepended directly, plus
     the "#"-commented BED4 column-name line tabix/IGV/UCSC all skip. Depends
     on the whole Neighborhoods directory rather than EnhancerList.bed

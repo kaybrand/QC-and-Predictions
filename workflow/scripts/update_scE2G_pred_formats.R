@@ -27,16 +27,6 @@ option_list = list(
               help = "Link to metadata of this file on IGVF data portal", metavar = "character"), 
   make_option(c("-a", "--all_columns"), action = "store_true", default = FALSE,
               help = "Include all columns in element/gene lists"),
-  # Every other output mode is chosen by sniffing opt$input_file for
-  # "gene_list"/"element_list". That cannot work here: this mode's input IS the
-  # predictions file, whose name contains neither, so it would fall through to
-  # the predictions branches and silently emit the wrong shape. Hence an
-  # explicit flag rather than another filename pattern.
-  make_option(c("--genes_from_predictions"), action = "store_true", default = FALSE,
-              help = paste("Build the gene list from a scE2G_predictions file instead of a",
-                           "scE2G_gene_list file. Yields only genes actually scored (those with",
-                           "considered_for_predictions=TRUE), not the full annotation. Requires",
-                           "--strand_annotation, because no scE2G_predictions file carries strand")),
   # Was a hardcoded "10x Multiome" literal in the header block below, emitted on
   # EVERY file this script writes -- so scATAC outputs claimed the wrong assay
   # (including ones already uploaded to the Portal). Now a parameter, defaulting
@@ -47,11 +37,7 @@ option_list = list(
   # yang-li CATlas PseudobulkSets, with zero variation across either species
   # (verified live 2026-09-02; assay_titles is the longer "single-cell ATAC-seq").
   make_option(c("--assays"), type = "character", default = "10x Multiome",
-              help = "Value for the '# Assays:' header line", metavar = "character"),
-  make_option(c("--strand_annotation"), type = "character", default = NULL,
-              help = paste("processed_genes_file.bed, supplying GeneStrand for",
-                           "--genes_from_predictions. Columns: chr/start/end/symbol/score/strand/",
-                           "EnsemblID/gene_type"), metavar = "character")
+              help = "Value for the '# Assays:' header line", metavar = "character")
 )
 
 # parse arguments
@@ -110,14 +96,7 @@ if (!is.null(opt$threshold)) {
 }
 
 # add ScoreType if these are predictions (not metadata List).
-#
-# --genes_from_predictions has to be excluded explicitly: its INPUT is a
-# predictions file, so the filename test alone passes and the output gained a
-# "# ScoreType: positive_score" line that the Multiome genes file does not have
-# and the gene_quantifications format spec does not define. Same filename-
-# sniffing trap that made --genes_from_predictions a flag rather than another
-# name pattern -- the input's name does not determine the OUTPUT's kind.
-if (!grepl("_list", opt$input_file) && !opt$genes_from_predictions) {
+if (!grepl("_list", opt$input_file)) {
   header <- c(header, "# ScoreType: positive_score")
 }
 
@@ -149,95 +128,6 @@ if (grepl("element_list", opt$input_file) & !(opt$all_columns)) { # if file is a
       ElementName = paste0(ElementChr, ":", ElementStart, "-", ElementEnd)
     ) %>%
     select(ElementChr, ElementStart, ElementEnd, ElementName, ElementClass, everything())
-} else if (opt$genes_from_predictions) {
-  # Gene list built from scE2G_predictions rather than scE2G_gene_list.
-  #
-  # WHY: the predictions file is the authoritative statement of which genes this
-  # prediction set actually scored. Verified on catlas Bgl_51 (scATAC): the
-  # predictions carry 14942 distinct genes, exactly equal to the
-  # considered_for_predictions=TRUE subset of scE2G_gene_list's 20531 -- so this
-  # mode drops the 5589 genes that were annotated but never scored.
-  #
-  # WHY A SECOND INPUT: no scE2G_predictions file carries strand, in EITHER model
-  # family -- multiome's 27 columns are a strict superset of scATAC's 20 and
-  # neither includes it (checked 2026-09-02). Strand is a property of the gene
-  # annotation, not of a prediction, so it is joined from processed_genes_file.bed.
-  # That file is a pure genome annotation and was byte-identical (md5
-  # e00a3a154a2e...) across all 157 cluster directories checked, so it contributes
-  # nothing cluster-specific.
-  if (is.null(opt$strand_annotation)) {
-    stop("--genes_from_predictions requires --strand_annotation ",
-         "(no scE2G_predictions file carries strand)", call. = FALSE)
-  }
-  genes <- pred %>%
-    select(chr, GeneSymbol = TargetGene, GeneEnsemblID = TargetGeneEnsembl_ID,
-           TSS = TargetGeneTSS) %>%
-    distinct()
-  # One TSS per gene is an assumption worth enforcing rather than silently
-  # collapsing: 0 genes had >1 distinct (chr, TargetGeneTSS) when verified, so a
-  # violation means scE2G changed something upstream.
-  dup <- genes %>% count(GeneEnsemblID, GeneSymbol) %>% filter(n > 1)
-  if (nrow(dup) > 0) {
-    stop(nrow(dup), " gene(s) have more than one distinct (chr, TargetGeneTSS) in ",
-         opt$input_file, "; first: ", dup$GeneSymbol[1], call. = FALSE)
-  }
-  ann <- fread(opt$strand_annotation,
-               col.names = c("annChr", "annStart", "annEnd", "GeneSymbol",
-                             "annScore", "GeneStrand", "GeneEnsemblID", "annType")) %>%
-    select(GeneSymbol, GeneEnsemblID, GeneStrand, annChr, annStart, annEnd) %>%
-    distinct() %>%
-    mutate(annRow = row_number())
-  joined <- genes %>% inner_join(ann, by = c("GeneSymbol", "GeneEnsemblID"))
-  # An inner join that loses rows would quietly ship an incomplete gene list.
-  # The join resolved 14942/14942 with 0 missing and 0 ambiguous strand when
-  # verified, so any shortfall is a broken assumption, not an expected case.
-  if (nrow(joined) != nrow(genes)) {
-    missing <- anti_join(genes, ann, by = c("GeneSymbol", "GeneEnsemblID"))
-    stop(nrow(genes) - nrow(joined), " of ", nrow(genes),
-         " predicted gene(s) have no strand in ", opt$strand_annotation,
-         "; first: ", missing$GeneSymbol[1], " (", missing$GeneEnsemblID[1], ")", call. = FALSE)
-  }
-  # The annotation's own TSS (strand-aware gene bound) must agree with the
-  # predictions' TargetGeneTSS -- they did for all 14942. Disagreement means the
-  # two inputs describe different gene models and the output would be incoherent.
-  bad <- joined %>%
-    mutate(annTSS = ifelse(GeneStrand == "+", annStart, annEnd)) %>%
-    filter(chr != annChr | annTSS != TSS)
-  if (nrow(bad) > 0) {
-    stop(nrow(bad), " gene(s) disagree on TSS/chr between ", opt$input_file,
-         " and ", opt$strand_annotation, "; first: ", bad$GeneSymbol[1], call. = FALSE)
-  }
-  # Ordered by the annotation's own row order, so the output is positionally
-  # sorted and byte-stable across runs -- predictions row order is not.
-  pred <- joined %>%
-    arrange(annRow) %>%
-    mutate(TSSStart = TSS - 250, TSSEnd = TSS + 250) %>%
-    select(TSSChr = chr, TSSStart, TSSEnd, GeneSymbol, GeneEnsemblID, GeneStrand)
-} else if (grepl("gene_list", opt$input_file) & !(opt$all_columns)) { # if file is a gene list
-  pred <- pred %>%
-    mutate(
-        TSSStart = tss-250,
-        TSSEnd = tss+250
-    ) %>%
-    select(
-        TSSChr = chr,
-        TSSStart,
-        TSSEnd,
-        GeneSymbol = name,
-        GeneEnsemblID = Ensembl_ID,
-        GeneStrand = strand)
-} else if (grepl("gene_list", opt$input_file) & (opt$all_columns)) { # include all gene list columns
-  pred <- pred %>%
-    mutate(
-        TSSStart = tss-250,
-        TSSEnd = tss+250
-    ) %>%
-    rename(TSSChr = chr,
-           TSS = tss,
-           GeneSymbol = name,
-           GeneEnsemblID = Ensembl_ID,
-           GeneStrand = strand) %>% 
-    select(TSSChr, TSSStart, TSSEnd, GeneSymbol, GeneEnsemblID, GeneStrand, everything())
 } else if (grepl("ATAC", opt$method) & is.null(opt$threshold)) {
   # scATAC unthresholded ("full") predictions -- wider column set (2026-07-23):
   # every model-feature column gets a "feature." prefix, ABC.Score (scATAC's
