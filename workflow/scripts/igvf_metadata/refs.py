@@ -9,7 +9,7 @@ orchestrator.py's plan_table).
 
 atac_fragment_alias()/rna_matrix_alias() now delegate to the real
 "filtered_atac_fragment_file"/"filtered_rna_count_matrix" TableSpecs --
-every caller (Prediction Tabular Files' full/elements/genes rows, Signal
+every caller (Prediction Tabular Files' full/elements rows, Signal
 Files' derived_from, ATAC Index File's derived_from) needed the matching
 ("filtered_atac_fragment_file"|"filtered_rna_count_matrix", "") added to
 their own depends_on once each table became real, same reasoning as
@@ -21,6 +21,17 @@ model FILE (has submitted_file_name; used by derived_from-shaped fields,
 e.g. Prediction Tabular Files' full row). "scE2G_{Family}_model" is the
 model SET (referenced via some file's file_set; used by Sets-only fields,
 e.g. Prediction Set's input_file_sets).
+
+gene_list_alias() / gene_list_curated_set_alias() (2026-09-25): fixed,
+dataset-independent constants, same "already exists, never
+created/uploaded by this table" status as trained_model_file_alias() /
+trained_model_set_alias() above -- added when Prediction Tabular Files'
+per-(dataset,cluster) "genes" variant (content_type "gene quantifications")
+was retired. Every Multiome "full" row's derived_from now references
+gene_list_alias() instead of its own now-removed "...predictions_genes"
+alias, and every Prediction Set's input_file_sets gains
+gene_list_curated_set_alias() alongside the model Set and Principal
+Pseudobulk Set.
 
 principal_pseudobulk_set_alias() references a table not built yet
 (Principal Pseudobulk Set) -- same "raises only if called before
@@ -131,6 +142,21 @@ def trained_model_set_alias(ctx):
     from .tables.prediction_tabular_files import family
 
     return make_alias(ctx.igvf, "scE2G", family(ctx.model), "model")
+
+
+def gene_list_alias(ctx):
+    """The fixed, externally-curated scE2G candidate gene list FILE -- for
+    derived_from-shaped fields (e.g. Prediction Tabular Files' full row).
+    Like trained_model_file_alias, this names an object this pipeline never
+    creates or uploads, so callers need no matching depends_on entry."""
+    return "jesse-engreitz:sce2g_gencode_v43_gene_list"
+
+
+def gene_list_curated_set_alias(ctx):
+    """The fixed FileSet gene_list_alias's FILE belongs to -- for Sets-only
+    fields (Prediction Set's input_file_sets). Same "already exists, never
+    created/uploaded here" status as gene_list_alias."""
+    return "jesse-engreitz:sce2g_gencode_v43_gene_list_curated_set"
 
 
 def principal_pseudobulk_set_alias(ctx):
