@@ -383,10 +383,10 @@ Set, Filtered Barcode Lists, Filtered ATAC Fragment Files, Filtered Matrix
 Files, Signal Files, ATAC Index File, Elements BED Index File, BEDPE Index
 File, Documents).
 
-Eleven tables, but **fifteen** manifest files per fully-covered dataset: a
+Eleven tables, but **fourteen** manifest files per fully-covered dataset: a
 table can register several *variants*, each of which gets its own file.
-Prediction Tabular Files alone has five (`elements_bed`, `genes`, `full`,
-`thresholded`, `bedpe`). Don't read "11 tables" and "15 files" as a
+Prediction Tabular Files alone has four (`elements_bed`, `full`,
+`thresholded`, `bedpe`). Don't read "11 tables" and "14 files" as a
 discrepancy — see [Reading the manifest directory](#reading-the-manifest-directory).
 
 Real writes always go through `igvf_utils`' own `iu_register.py`, never a
@@ -426,14 +426,14 @@ mistaking one for the other is the easiest way to misread a run.
 Ephemeral, and rewritten every run. The round number encodes dependency order:
 **sorting by filename *is* the upload order**, because a later round's payloads
 reference aliases earlier rounds create. A fully-covered dataset produces
-fifteen of these.
+fourteen of these.
 
 - `_post` — no object exists at this alias; create it.
 - `_patch` — it exists and the payload hash *changed*; update it.
 - A table can legitimately have **neither**. If a row's alias is already live
   and its payload hash is unchanged, the outcome is `unchanged` and nothing is
   written, because a patch would ask the Portal to overwrite fields with the
-  values they already hold. **Fourteen round files instead of fifteen is not
+  values they already hold. **Thirteen round files instead of fourteen is not
   automatically a failure** — check `manifest_coverage.tsv` for `unchanged`
   before treating it as a gap.
 
@@ -519,10 +519,11 @@ reformat rule would rebuild every time).
 
 ### Reformat eligibility is gated on the CellAnnotation cache, not a preview TSV
 
-`reformat_predictions`/`reformat_predictions_thresholded`/`reformat_element_list`/
-`reformat_gene_list` (the rules that turn scE2G's own output into portal-format
-Prediction Tabular Files; the single `{meta}`-wildcarded `reformat_lists` rule was
-split into the element/gene pair on 2026-08-19, see `rules/reformat.smk`)
+`reformat_predictions`/`reformat_predictions_thresholded`/`reformat_element_list`
+(the rules that turn scE2G's own output into portal-format Prediction Tabular
+Files; the single `{meta}`-wildcarded `reformat_lists` rule was split into the
+element/gene pair on 2026-08-19, see `rules/reformat.smk` — the gene half,
+`reformat_gene_list`, was retired 2026-09-25 along with the "genes" variant)
 only run for a `(dataset, cluster)` with a real, cached
 CellAnnotation row already in `state.db` — computed at Snakemake parse time
 as `common.smk`'s `REFORMAT_ELIGIBLE_CLUSTERS` (read from the driver-written

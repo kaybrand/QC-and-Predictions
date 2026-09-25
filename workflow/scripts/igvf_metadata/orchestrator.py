@@ -497,8 +497,10 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
                 record_coverage(dataset, cluster, model_key, variant.name, "enabled-check-failed", str(e))
                 continue
             if not is_enabled:
-                # A deliberate semantic exclusion (e.g. "genes" under scATAC). Expected,
-                # distinct from a missing file, and never a manifest gap.
+                # A deliberate semantic exclusion via a variant's enabled() gate (no
+                # current variant uses one -- Prediction Tabular Files' "genes" was
+                # the only user, retired 2026-09-25). Expected, distinct from a
+                # missing file, and never a manifest gap.
                 bump("skipped-family-gated")
                 record_coverage(dataset, cluster, model_key, variant.name, "skipped-family-gated")
                 continue
@@ -703,8 +705,8 @@ def run(
         coverage_rows.extend(coverage)
 
         # Group by (dataset, variant, round), not just table: a table whose variants
-        # sit at different dependency layers (e.g. prediction_tabular_files' elements/
-        # genes vs full vs thresholded vs bedpe) must split into separately
+        # sit at different dependency layers (e.g. prediction_tabular_files'
+        # elements_bed vs full vs thresholded vs bedpe) must split into separately
         # round-numbered files -- one round per file, so sorting a dataset's
         # subfolder by filename gives the actual upload order (see module
         # docstring). Splitting by dataset too keeps concurrent datasets' files
