@@ -215,6 +215,9 @@ def _full_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
+        # "full" is every candidate link scE2G scored, not a threshold-filtered
+        # subset -- unlike thresholded/bedpe below.
+        "filtered": False,
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
         "file_format_specifications": [
@@ -230,6 +233,10 @@ def _thresholded_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
+        # Score >= threshold has been applied to "full" to produce this row
+        # (reformat_predictions_thresholded's own --threshold flag) -- unlike
+        # full/elements_bed, which carry every candidate.
+        "filtered": True,
         "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
         "file_format_specifications": [
@@ -245,6 +252,9 @@ def _bedpe_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "bedpe",
+        # Same filtered subset as "thresholded" (derived_from it below), just
+        # repackaged as bedpe for genome-browser visualization.
+        "filtered": True,
         "description": (
             f"Bedpe file for genome browser visualization of thresholded scE2G ({family(ctx.model)}) "
             f"predictions for {ctx.dataset} {ctx.cluster} cells"
@@ -275,6 +285,9 @@ def _elements_bed_row(ctx):
         # three standard BED columns plus extras. This file is
         # chr/start/end/ElementName.
         "file_format_type": "bed3+",
+        # Elements are the pre-scoring candidate universe (see module
+        # docstring), not a threshold-filtered subset of anything.
+        "filtered": False,
         "description": (
             f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} "
             "cells for IGV visualization"
@@ -318,7 +331,9 @@ TABLE = registry.register(
         required_columns=["aliases", "award", "lab", "content_type", "controlled_access", "file_format", "file_set"],
         constant_fields={
             "controlled_access": False,
-            "filtered": True,
+            # filtered is NOT here: each variant's own build_row sets it
+            # (True for thresholded/bedpe, False for full/elements_bed) --
+            # no single default applies to all four.
             "derived_manually": False,
             "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
         },
