@@ -222,9 +222,19 @@ def _full_row(ctx):
         "filtered": False,
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
+        # scE2G_feature_table_file_format_specification_{pdf,md} added
+        # 2026-09-30: "full" also carries the raw scE2G feature-table columns
+        # (unlike thresholded/bedpe, which only ever show the standard
+        # E2G_prediction_file_format columns), so it needs that second spec
+        # alongside element_to_gene_interaction_predictions_file_format.
+        # Matches file_format_spec_igvf_manifests/prediction_tabular_files_full_gene_list_patch.tsv,
+        # already applied to the 138 already-live "full" records -- this
+        # keeps future uploads consistent with those.
         "file_format_specifications": [
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
+            make_alias(ctx.igvf, "scE2G_feature_table_file_format_specification_pdf"),
+            make_alias(ctx.igvf, "scE2G_feature_table_file_format_specification_md"),
         ],
         "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _full_path(ctx),
