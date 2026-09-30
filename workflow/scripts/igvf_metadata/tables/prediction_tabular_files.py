@@ -216,7 +216,9 @@ def _full_row(ctx):
         "content_type": "element to gene interactions",
         "file_format": "tsv",
         # "full" is every candidate link scE2G scored, not a threshold-filtered
-        # subset -- unlike thresholded/bedpe below.
+        # subset -- unlike thresholded/bedpe below. (elements_bed also omits
+        # this comparison: it doesn't set "filtered" at all -- see its own
+        # build_row.)
         "filtered": False,
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
@@ -285,9 +287,14 @@ def _elements_bed_row(ctx):
         # three standard BED columns plus extras. This file is
         # chr/start/end/ElementName.
         "file_format_type": "bed3+",
-        # Elements are the pre-scoring candidate universe (see module
-        # docstring), not a threshold-filtered subset of anything.
-        "filtered": False,
+        # No "filtered" key at all here (2026-09-30) -- not True, not False,
+        # entirely absent. Elements are the pre-scoring candidate universe
+        # (see module docstring), so "filtered" doesn't cleanly apply either
+        # way; removed live from every already-uploaded elements_bed record
+        # via igvf_utils.connection.Connection.remove_props (see
+        # workflow/scripts/remove_filtered_from_elements_bed.py) rather than
+        # set to False, so new uploads must omit the key too or a future
+        # reconciliation PATCH would silently reintroduce it.
         "description": (
             f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} "
             "cells for IGV visualization"
@@ -331,9 +338,10 @@ TABLE = registry.register(
         required_columns=["aliases", "award", "lab", "content_type", "controlled_access", "file_format", "file_set"],
         constant_fields={
             "controlled_access": False,
-            # filtered is NOT here: each variant's own build_row sets it
-            # (True for thresholded/bedpe, False for full/elements_bed) --
-            # no single default applies to all four.
+            # filtered is NOT here: thresholded/bedpe set it True, full sets
+            # it False, and elements_bed doesn't set it at all (2026-09-30 --
+            # not True, not False, entirely absent) -- no single default, or
+            # even a single True/False split, applies to all four.
             "derived_manually": False,
             "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
         },
