@@ -2,7 +2,7 @@
 """
 Concatenate and QC-filter RNA count matrices (h5ad) for a given cell type.
 
-For each annotation-{cellType}-IGVF* directory, opens rna_counts_mtx.h5ad,
+For each annotation-{cellType}-IGVF* (or bare {cellType}-IGVF*) directory, opens rna_counts_mtx.h5ad,
 filters to cells whose full obs_name appears in the QC filter guide, concatenates
 all passing cells, and writes a single output file.
 
@@ -43,7 +43,7 @@ def parse_args():
     p = argparse.ArgumentParser(description="Concatenate and QC-filter RNA h5ad matrices by cell type.")
     p.add_argument("--qc-guide",    required=True, help="Path to gzipped QC filter guide TSV.")
     p.add_argument("--pseudobulks", required=True, help="Path to pseudobulks folder.")
-    p.add_argument("--cell-type",   required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF'). Comma-separated for a merged cluster spanning multiple raw pseudobulk annotations (e.g. 'mcf7_1,mcf7_2').")
+    p.add_argument("--cell-type",   required=True, help="Exact cell type identifier used in pseudobulk directory names (the string between 'annotation-' and '-IGVF', or before '-IGVF' when there is no 'annotation-' prefix). Comma-separated for a merged cluster spanning multiple raw pseudobulk annotations (e.g. 'mcf7_1,mcf7_2').")
     p.add_argument("--out",         required=True, help="Output path. Format is inferred from extension: .csv/.csv.gz, .h5ad/.h5, or .mtx/.mtx.gz (writes a directory).")
     p.add_argument("--ensemblIDs-as-genes", action="store_true", dest="ensembl_ids",
                    help="Retain Ensembl IDs as gene identifiers. Default: convert to gene symbols, "
@@ -139,12 +139,19 @@ def find_h5ad_dirs(pseudobulks_dir: str, cell_type: str) -> list:
     for each comma-separated cell_type -- supports merging multiple raw
     pseudobulk annotations into one filtered output (e.g. a cluster config
     with pseudobulk_annotation "mcf7_1,mcf7_2" concatenates both raw
-    directory sets; a plain single cell_type behaves exactly as before)."""
+    directory sets; a plain single cell_type behaves exactly as before).
+    IGVFDS-accession submissions (2026-09 onward, Portal alias
+    "{lab}:pseudobulk-{dataset}-{annotation}-{subsample}") drop the literal
+    "annotation-" prefix on disk: {cellType}-IGVF*. That bare form is tried
+    only when the prefixed one finds nothing, so older datasets are unaffected."""
     all_dirs = []
     for ct in cell_type.split(","):
         ct = ct.strip()
         pattern = os.path.join(pseudobulks_dir, f"annotation-{ct}-IGVF*")
         dirs = sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
+        if not dirs:
+            pattern = os.path.join(pseudobulks_dir, f"{ct}-IGVF*")
+            dirs = sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
         if dirs:
             print(f"[info] Found {len(dirs)} matching directories for cell type '{ct}'.", file=sys.stderr)
             all_dirs.extend(dirs)
