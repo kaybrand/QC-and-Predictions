@@ -11,6 +11,27 @@ just the CLI that wires them together.
         --datasets igvf10 \
         --dry-run
 
+DEFAULTS download the MINIMUM the pipeline needs from each pseudobulk, and
+nothing else -- exactly three files per set:
+    fragments.tsv.gz     (content_type "fragments", file_format tsv)
+    rna_counts_mtx.h5ad  (content_type "cell by gene matrix")
+    per_cell_qc.tsv.gz   (content_type "per-cell quality report")
+  --content-types          only those three content_types are ever fetched
+  --exclude-file-formats   bigBed: skips fragments.bb, a browser-indexed copy of
+                           the same fragments as fragments.tsv.gz (2026-10-19:
+                           identical rows, only chromosome order differs)
+  --require-content-types  fragments,cell by gene matrix: RNA-only sets (no
+                           fragments) are skipped whole
+  --datasets               every dataset on the portal
+So the minimum-data sync of everything is just:
+
+    python download_portal_pseudobulks.py \
+        --download-root /scratch/users/$USER/pseudobulk_portal \
+        --state-db resources/igvf_metadata_state.db
+
+To ALSO fetch fragments.bb, add --exclude-file-formats ''. To include RNA-only
+sets, add --require-content-types ''.
+
 Run it under Slurm, never on a login node -- a full run is thousands of files
 and hours of network I/O. See resources/run_portal_download.sbatch.
 
@@ -81,6 +102,21 @@ def parse_args(argv=None):
         "--content-types",
         default=",".join(sorted(portal_files.TARGET_CONTENT_TYPES)),
         help="comma-separated portal content_type values to fetch",
+    )
+    p.add_argument(
+        "--exclude-file-formats",
+        default="bigBed",
+        help="comma-separated portal file_format values never to download (default bigBed). Since "
+        "2026-10 most sets carry a second `fragments` file, fragments.bb, alongside the "
+        "fragments.tsv.gz the pipeline reads; nothing here consumes the bigBed. Excluded files "
+        "are still recorded in the ledger, just not transferred. Pass '' to disable.",
+    )
+    p.add_argument(
+        "--require-content-types",
+        default="fragments,cell by gene matrix",
+        help="comma-separated content_types a set must carry (after --exclude-file-formats) for ANY "
+        "of its files to be downloaded (default: fragments,cell by gene matrix -- i.e. multiome-"
+        "ready). RNA-only sets are skipped whole rather than half-downloaded. Pass '' to disable.",
     )
     p.add_argument("--max-workers", type=int, default=4, help="concurrent transfers (default 4)")
     p.add_argument(
@@ -195,10 +231,29 @@ def main(argv=None):
     if unresolved:
         log(f"{len(unresolved)} file(s) have no resolvable local path -> needs_review, not downloaded")
 
+    excluded_formats = {f.strip() for f in args.exclude_file_formats.split(",") if f.strip()}
+    required_types = {t.strip() for t in args.require_content_types.split(",") if t.strip()}
+    types_by_set = {}
+    for rec in records:
+        if rec.get("file_format") not in excluded_formats:
+            types_by_set.setdefault(rec["file_set"], set()).add(rec["content_type"])
+    incomplete_sets = {fs for fs, types in types_by_set.items() if not required_types <= types}
+    if excluded_formats:
+        n = sum(1 for r in records if r.get("file_format") in excluded_formats)
+        log(f"--exclude-file-formats {sorted(excluded_formats)}: {n} file(s) not transferred")
+    if required_types:
+        n = sum(1 for r in records if r["file_set"] in incomplete_sets)
+        log(
+            f"--require-content-types {sorted(required_types)}: {len(incomplete_sets)} set(s) "
+            f"lacking one, {n} file(s) not transferred"
+        )
+
     todo = []
     skipped_unchanged = 0
     for rec in records:
         if not rec["local_path"]:
+            continue
+        if rec.get("file_format") in excluded_formats or rec["file_set"] in incomplete_sets:
             continue
         row = state.get_portal_file(conn, rec["accession"])
         should, reason = downloader.needs_download(row, rec["local_path"])
