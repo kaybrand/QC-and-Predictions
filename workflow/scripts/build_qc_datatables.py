@@ -46,13 +46,19 @@ is the right default for a newly discovered pseudobulk that has no config yet.
 """
 
 import argparse
-import glob
 import gzip
 import os
 import re
 import sys
 
 DIRNAME_RE = re.compile(r"^annotation-(?P<annotation>.+)-(?P<subsample>IGVFSM\w+)$")
+# New accession-format submissions (IGVFDS* datasets, 2026-09 onward) drop the
+# literal "annotation-" prefix: the directory is just "{annotation}-{subsample}"
+# (see portal_files.py's resolve_scope, which flags these "nonstandard_directory_name"
+# but still resolves dataset/annotation/subsample correctly). Tried only as a
+# fallback, after DIRNAME_RE, so an old-format "annotation-Fibroblast-IGVFSM..."
+# directory is never mis-parsed as annotation "annotation-Fibroblast".
+BARE_DIRNAME_RE = re.compile(r"^(?P<annotation>.+)-(?P<subsample>IGVFSM\w+)$")
 PER_CELL_QC_NAMES = ("per_cell_qc.tsv.gz", "per_cell_qc.tsv")
 EXPECTED_COLUMNS = [
     "analysis_accession", "barcode", "subsample", "rna_read_count", "gene_count",
@@ -80,11 +86,35 @@ def per_cell_qc_path(directory):
     return None
 
 
+def _match_dirname(entry):
+    """(annotation, subsample) for a pseudobulk directory name, or None. Tries
+    the old "annotation-" prefixed convention first, falls back to the new bare
+    one -- see BARE_DIRNAME_RE."""
+    m = DIRNAME_RE.match(entry)
+    if m:
+        return m.group("annotation"), m.group("subsample")
+    m = BARE_DIRNAME_RE.match(entry)
+    if m:
+        return m.group("annotation"), m.group("subsample")
+    return None
+
+
 def annotation_dirs(pseudobulks_root, dataset, annotation):
     """This annotation's pseudobulk directories, sorted -- the order that
-    reproduces the existing datatables exactly."""
-    pattern = os.path.join(pseudobulks_root, dataset, "pseudobulks", f"annotation-{annotation}-IGVFSM*")
-    return sorted(d for d in glob.glob(pattern) if os.path.isdir(d))
+    reproduces the existing datatables exactly. Matches both the old
+    "annotation-{annotation}-{subsample}" layout and the new bare
+    "{annotation}-{subsample}" layout."""
+    base = os.path.join(pseudobulks_root, dataset, "pseudobulks")
+    if not os.path.isdir(base):
+        return []
+    dirs = []
+    for entry in os.listdir(base):
+        parsed = _match_dirname(entry)
+        if parsed and parsed[0] == annotation:
+            full = os.path.join(base, entry)
+            if os.path.isdir(full):
+                dirs.append(full)
+    return sorted(dirs)
 
 
 def discover_annotations(pseudobulks_root, dataset):
@@ -93,9 +123,9 @@ def discover_annotations(pseudobulks_root, dataset):
         return []
     found = set()
     for entry in os.listdir(base):
-        m = DIRNAME_RE.match(entry)
-        if m and os.path.isdir(os.path.join(base, entry)):
-            found.add(m.group("annotation"))
+        parsed = _match_dirname(entry)
+        if parsed and os.path.isdir(os.path.join(base, entry)):
+            found.add(parsed[0])
     return sorted(found)
 
 
