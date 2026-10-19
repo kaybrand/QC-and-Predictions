@@ -245,6 +245,17 @@ def _merge_sources(cluster_cfg, cluster):
     return names or [cluster]
 
 
+def _candidate_suffixes(dataset, name, subsample):
+    """Alias suffixes a (dataset, annotation, subsample) primary may carry, in
+    preference order. Older submissions (igvf0..igvf18) are aliased
+    "{dataset}-{annotation}-{subsample}"; IGVFDS-accession submissions (2026-09
+    onward) prefix a literal "pseudobulk-", e.g.
+    "anshul-kundaje:pseudobulk-IGVFDS6718MRBP-mast_cell-IGVFSM0425HAKK". The
+    dataset is then the principal analysis set accession, which is why such a
+    dataset's config key must be that accession."""
+    return (f"{dataset}-{name}-{subsample}", f"pseudobulk-{dataset}-{name}-{subsample}")
+
+
 def _alias_suffix(alias):
     """The part after the first ":" -- "{dataset}-{cluster}-{subsample}" for
     the ~500 primaries that follow that convention, whatever it is for
@@ -416,8 +427,11 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
         rows_by_subsample = {}    # subsample -> its matched row(s), in source_names order
         missing_locally = []
         for s in local_subsamples:
-            hits = [f"{dataset}-{name}-{s}" for name in source_names
-                    if f"{dataset}-{name}-{s}" in primary_by_alias_suffix]
+            # At most one alias form per name: the first candidate that exists.
+            hits = [hit for name in source_names
+                    for hit in [next((c for c in _candidate_suffixes(dataset, name, s)
+                                      if c in primary_by_alias_suffix), None)]
+                    if hit]
             if hits:
                 candidate_suffixes.update({suffix: s for suffix in hits})
                 rows_by_subsample[s] = [primary_by_alias_suffix[suffix] for suffix in hits]
@@ -426,11 +440,11 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
             # Report every suffix we CONSIDERED as matched, not just the ones that
             # hit, so the trailing unmatched-primaries audit isn't polluted by the
             # constituent names we deliberately probed.
-            matched_suffixes |= {f"{dataset}-{name}-{s}" for name in source_names}
+            matched_suffixes |= {c for name in source_names for c in _candidate_suffixes(dataset, name, s)}
         if missing_locally:
             log(
                 f"{dataset}/{cluster}: local subsample(s) {sorted(missing_locally)} have no corresponding "
-                f"primary pseudobulk alias matching \"{{lab}}:{dataset}-{{{'|'.join(source_names)}}}-{{subsample}}\" "
+                f"primary pseudobulk alias matching \"{{lab}}:[pseudobulk-]{dataset}-{{{'|'.join(source_names)}}}-{{subsample}}\" "
                 f"on the portal -- skipping this scope's cache until resolved (expected for primaries uploaded "
                 f"under a different alias convention -- see module docstring)"
             )
