@@ -147,7 +147,16 @@ def build_one(pseudobulks_root, dataset, cluster, annotations, out_path):
     if not sources:
         return 0, 0, skipped
 
-    header = None
+    # New accession-format submissions rename 2 of the 12 columns (same meaning,
+    # same position): analysis_set_accession for analysis_accession, and
+    # barcode_sample for barcode. Every downstream consumer (plot_per_cell_qc.R,
+    # the ~13 QC_pseudobulks scripts this module's docstring documents) expects
+    # the ORIGINAL names, so the header written to disk is always the canonical
+    # EXPECTED_COLUMNS form regardless of which convention a given source used.
+    column_renames = {"analysis_set_accession": "analysis_accession", "barcode_sample": "barcode"}
+    canonical_header = "\t".join(EXPECTED_COLUMNS) + "\n"
+
+    normalized_header = None
     total = 0
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     tmp = out_path + ".tmp"
@@ -155,22 +164,23 @@ def build_one(pseudobulks_root, dataset, cluster, annotations, out_path):
         for path in sources:
             with _open(path) as fh:
                 first = fh.readline()
-                if header is None:
-                    header = first
-                    cols = header.rstrip("\n").split("\t")
+                raw_cols = first.rstrip("\n").split("\t")
+                cols = [column_renames.get(c, c) for c in raw_cols]
+                if normalized_header is None:
                     if cols != EXPECTED_COLUMNS:
                         os.unlink(tmp)
                         raise ValueError(
-                            f"{path}: unexpected columns.\n  expected {EXPECTED_COLUMNS}\n  got      {cols}"
+                            f"{path}: unexpected columns.\n  expected {EXPECTED_COLUMNS}\n  got      {raw_cols}"
                         )
-                    out.write(header)
-                elif first != header:
+                    normalized_header = cols
+                    out.write(canonical_header)
+                elif cols != normalized_header:
                     # Refuse rather than emit a table whose rows disagree about
                     # what its columns mean.
                     os.unlink(tmp)
                     raise ValueError(
                         f"{path}: header differs from the first source in this cluster.\n"
-                        f"  first : {header.rstrip()}\n  this  : {first.rstrip()}"
+                        f"  first : {normalized_header}\n  this  : {cols}"
                     )
                 for line in fh:
                     out.write(line)
