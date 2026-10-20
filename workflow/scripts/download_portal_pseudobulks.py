@@ -41,9 +41,11 @@ and hours of network I/O. See resources/run_portal_download.sbatch.
 
 The output layout MIRRORS what the pipeline already expects:
     {download-root}/{dataset}/pseudobulks/annotation-{annotation}-{subsample}/
-so repointing `pseudobulks_root` in a *_pipeline_config.yaml is the only change
-needed to run on downloaded rather than archive-extracted data -- no change to
-filter_atac_fragments.py or filter_rna_counts.py, which glob that layout.
+or, for IGVFDS-accession submissions (2026-09 onward), the bare
+    {download-root}/{IGVFDS...}/pseudobulks/{annotation}-{subsample}/
+-- directory names are taken verbatim from submitted_file_name. `pseudobulks_root`
+in a *_pipeline_config.yaml is this --download-root; filter_atac_fragments.py and
+filter_rna_counts.py glob both layouts.
 
 Resumability is a property of the ledger, not of this process: every file's
 outcome is committed as it completes, so an interrupted run (walltime, node
