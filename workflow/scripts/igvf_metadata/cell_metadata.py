@@ -292,7 +292,24 @@ def fetch_if_stale(conn, reader):
     log(f"cell_annotations cache {'empty' if not last_fetch else 'stale'} -- issuing multireport GET")
 
     rows = reader.get_multireport(_MULTIREPORT_QUERY)
-    now = _now()
+    save_multireport_rows(conn, rows, _now())
+    return True
+
+
+def save_multireport_rows(conn, rows, now):
+    """The SAVE step: record a complete PseudobulkSet multireport as the raw
+    cache, and stamp the fetch time the 24h TTL is measured from. Returns
+    (saved_primary_count, saved_principal_count).
+
+    fetch_if_stale calls this after its own GET. download_portal_pseudobulks.py
+    calls it too, on the rows its file discovery already fetched -- the same
+    wholesale `type=PseudobulkSet&status!=deleted&limit=all` GET -- so a sync
+    refreshes Cell Annotations at the same moment as the file ledger, without a
+    second request. `rows` MUST be the complete, unfiltered multireport: the
+    timestamp written here tells every later fetch_if_stale the whole cache is
+    current. Annotations can change until a pseudobulk is released, which is
+    why both paths keep upserting.
+    """
     # Recorded unconditionally, before any per-scope validation: the TTL is about
     # "did we hit the network recently," not "did every scope's data validate cleanly."
     # A round where every scope fails local-subset-of-portal validation must still count
@@ -354,7 +371,7 @@ def fetch_if_stale(conn, reader):
         f"saved {saved_primary_count} primary pseudobulk row(s) ({skipped_no_alias} skipped for lacking an alias) "
         f"and {saved_principal_count} principal pseudobulk row(s) to the raw cache"
     )
-    return True
+    return saved_primary_count, saved_principal_count
 
 
 def derive_scopes(conn, cluster_keys, cluster_configs):
