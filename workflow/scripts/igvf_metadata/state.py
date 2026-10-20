@@ -81,6 +81,24 @@ CREATE TABLE IF NOT EXISTS cell_annotations_fetch_log (
     fetched_at TEXT NOT NULL
 );
 
+-- Hand-curated Cell Annotation corrections, per (dataset, cluster) (2026-10-20).
+-- NEVER written by fetch_if_stale/save_multireport_rows or derive_scopes, so a
+-- Portal refresh cannot overwrite them; derive_scopes APPLIES them on every run,
+-- replacing the cell_annotation/cell_qualifier it would otherwise derive (cell
+-- type terms always stay the Portal's). Uses: a merged cluster that needs a
+-- specific annotation (IGVFDS3445MTOM/hcasm_calcification), and correcting a
+-- Portal typo in our own records (DEME -> DMEM). Set with
+-- workflow/scripts/set_cell_annotation_override.py.
+CREATE TABLE IF NOT EXISTS cell_annotation_overrides (
+    dataset TEXT NOT NULL,
+    cluster TEXT NOT NULL,
+    cell_annotation TEXT NOT NULL,
+    cell_qualifier TEXT,
+    reason TEXT NOT NULL,
+    set_at TEXT NOT NULL,
+    UNIQUE (dataset, cluster)
+);
+
 -- Small key/value scratchpad for "what did we last publish somewhere else"
 -- (2026-08-27). First and only key so far: synapse_cell_annotation_digest, the
 -- sha256 of the cell_annotation_table.tsv content most recently stored to
@@ -352,6 +370,37 @@ def get_cell_annotation(conn, dataset, cluster):
 
 def all_cell_annotations(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_annotations").fetchall()]
+
+
+def upsert_cell_annotation_override(conn, dataset, cluster, cell_annotation, cell_qualifier, reason, now):
+    with transaction(conn):
+        conn.execute(
+            """INSERT INTO cell_annotation_overrides
+                   (dataset, cluster, cell_annotation, cell_qualifier, reason, set_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(dataset, cluster) DO UPDATE SET
+                   cell_annotation=excluded.cell_annotation,
+                   cell_qualifier=excluded.cell_qualifier,
+                   reason=excluded.reason,
+                   set_at=excluded.set_at""",
+            (dataset, cluster, cell_annotation, cell_qualifier, reason, now),
+        )
+
+
+def delete_cell_annotation_override(conn, dataset, cluster):
+    with transaction(conn):
+        conn.execute("DELETE FROM cell_annotation_overrides WHERE dataset=? AND cluster=?", (dataset, cluster))
+
+
+def get_cell_annotation_override(conn, dataset, cluster):
+    row = conn.execute(
+        "SELECT * FROM cell_annotation_overrides WHERE dataset=? AND cluster=?", (dataset, cluster)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def all_cell_annotation_overrides(conn):
+    return [dict(row) for row in conn.execute("SELECT * FROM cell_annotation_overrides").fetchall()]
 
 
 def upsert_cell_annotation(
