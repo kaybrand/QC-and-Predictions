@@ -500,6 +500,25 @@ def upsert_principal_pseudobulk(conn, alias, cell_annotation, now):
         )
 
 
+def primary_pseudobulk_alias_exists(conn, alias):
+    """Whether a primary PseudobulkSet alias is in the raw cache (local; no GET)."""
+    row = conn.execute("SELECT 1 FROM cell_metadata_primary_pseudobulks WHERE alias=?", (alias,)).fetchone()
+    return row is not None
+
+
+def portal_file_aliases(conn, dataset, annotation, subsample, content_type, file_format):
+    """Aliases of the ledger's files for one primary pseudobulk (dataset,
+    annotation, subsample) of one content_type/file_format (local; no GET)."""
+    rows = conn.execute(
+        """SELECT alias FROM portal_files
+           WHERE dataset=? AND annotation=? AND subsample=? AND content_type=? AND file_format=?
+             AND alias IS NOT NULL
+           ORDER BY alias""",
+        (dataset, annotation, subsample, content_type, file_format),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
 def all_principal_pseudobulks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_principal_pseudobulks").fetchall()]
 
