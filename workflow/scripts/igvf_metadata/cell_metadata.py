@@ -543,6 +543,19 @@ def derive_scopes(conn, cluster_keys, cluster_configs):
             cell_annotation = winning_row["cell_annotation"]
             cell_qualifier = winning_row["cell_qualifier"]
 
+        # A hand-curated override (state.cell_annotation_overrides) wins over the
+        # derivation above. It lives in its own table, which no Portal refresh
+        # writes, so it survives every fetch and is re-applied on every derive.
+        # Cell type terms are never overridden: only the free-text annotation and
+        # qualifier we report and submit.
+        override = state.get_cell_annotation_override(conn, dataset, cluster)
+        if override:
+            log(
+                f"{dataset}/{cluster}: applying Cell Annotation override "
+                f"({cell_annotation!r} -> {override['cell_annotation']!r}; reason: {override['reason']})"
+            )
+            cell_annotation, cell_qualifier = override["cell_annotation"], override["cell_qualifier"]
+
         all_primary_released = all(r["status"] == "released" for r in scope_rows)
         principal_alias = principal_by_annotation.get(cell_annotation)
 
