@@ -53,9 +53,11 @@ failure, Ctrl-C) is resumed by re-invoking with the same arguments. Files whose
 portal md5sum still matches what was observed at download time are skipped;
 files upstream has since replaced are re-fetched (see downloader.needs_download).
 
-$SCRATCH note: the 90-day purge timer is reset only by real content writes. A
-resumed run that SKIPS an unchanged file does not refresh that file's timer, so
-a long-lived tree still needs periodic real activity to survive.
+$SCRATCH note: downloaded primary pseudobulks are working copies, not an
+archive. The expectation is that the work using them finishes within $SCRATCH's
+90-day purge window; anything purged after that is simply fetched from the IGVF
+Data Portal again (re-run this script, which re-downloads whatever is absent).
+Keep durable products on Oak, never the raw downloads.
 """
 
 import argparse
