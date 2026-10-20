@@ -53,15 +53,13 @@ from ..context import make_alias
 
 TABLE_NAME = "principal_pseudobulk_set"
 
-_KUNDAJE_ALIAS_PREFIX = "anshul-kundaje"  # a different lab's namespace, not ours -- see module docstring
-
 
 def build_alias(ctx, variant_name):
     return make_alias(ctx.igvf, ctx.dataset, ctx.cluster, "filtered_pseudobulk_set")
 
 
 def _primary_pseudobulk_aliases(ctx):
-    return [f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}" for s in subsamples.unique_subsamples(ctx)]
+    return refs.primary_pseudobulk_set_aliases(ctx)
 
 
 def _row(ctx):

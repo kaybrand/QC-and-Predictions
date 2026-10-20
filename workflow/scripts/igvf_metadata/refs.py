@@ -78,7 +78,9 @@ functions (one per calling table's own semantics: ATAC fragment/index vs.
 RNA matrix workflow) even though the value happens to coincide today.
 """
 
-from . import registry, subsamples
+import re
+
+from . import registry, state, subsamples
 from .context import make_alias
 
 # Shared by qc_guide_to_atac_fragment_analysis_step_version_alias and
@@ -88,10 +90,94 @@ from .context import make_alias
 # 2026-08-25 to 28d9aece-0621-458c-949f-0314c8301228, replacing 9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44.
 _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/28d9aece-0621-458c-949f-0314c8301228/"
 
-# A different lab's (Anshul Kundaje's) namespace, not ours -- same constant as
-# tables/principal_pseudobulk_set.py's _KUNDAJE_ALIAS_PREFIX, duplicated here
-# rather than imported to avoid a refs<->tables circular import.
+# A different lab's (Anshul Kundaje's) namespace, not ours.
 _KUNDAJE_ALIAS_PREFIX = "anshul-kundaje"
+
+# IGVFDS-accession submissions (2026-09 onward) changed the Kundaje alias shape:
+#   set:  anshul-kundaje:pseudobulk-{IGVFDS...}-{annotation}-{subsample}
+#   file: ...-per_cell_qc_tsv_gz / -fragments_tsv_gz / -rna_counts_mtx_h5ad
+# (old igvfN: no "pseudobulk-" prefix, "-per_cell_qc_tsv"). For those datasets the
+# aliases are READ from state.db rather than formulated: files from the
+# portal_files ledger by (dataset, annotation, subsample, content_type,
+# file_format), sets from the raw Cell Annotation cache. Both are filled by the
+# existing wholesale PseudobulkSet GET, so this adds no Portal requests. A merged
+# cluster lists every constituent's files (each subsample under the annotation it
+# really belongs to). igvfN datasets keep the original formula byte-for-byte --
+# they are live on the Portal, out of scope, and igvf18's manifests were corrected
+# by hand.
+_LEDGER_RESOLVED_DATASET = re.compile(r"^IGVFDS\w{8}$")
+_FILE_KINDS = {
+    "per_cell_qc": ("per-cell quality report", "tsv"),
+    "fragments": ("fragments", "tsv"),
+    "h5ad": ("cell by gene matrix", "h5ad"),
+}
+
+
+def _resolves_from_ledger(ctx):
+    return bool(_LEDGER_RESOLVED_DATASET.match(ctx.dataset))
+
+
+def _source_annotations(ctx):
+    """The cluster's own name, or a merged cluster's constituent annotations --
+    the same rule derive_scopes matches Cell Annotations on."""
+    from .cell_metadata import _merge_sources
+
+    return _merge_sources(ctx.cluster_cfg, ctx.cluster)
+
+
+def _require_conn(ctx, what):
+    if ctx.conn is None:
+        raise ValueError(f"{ctx.dataset}/{ctx.cluster}: resolving {what} needs a state.db connection (ctx.conn)")
+
+
+def _ledger_file_aliases(ctx, kind):
+    """One alias per (contributing subsample, constituent annotation) that has
+    this kind of file; raises if a contributing subsample has none, so the row
+    is reported invalid instead of carrying a dangling reference."""
+    content_type, file_format = _FILE_KINDS[kind]
+    _require_conn(ctx, f"{content_type} aliases")
+    names = _source_annotations(ctx)
+    aliases = []
+    for s in subsamples.unique_subsamples(ctx):
+        hits = []
+        for name in names:
+            found = state.portal_file_aliases(ctx.conn, ctx.dataset, name, s, content_type, file_format)
+            if len(found) > 1:
+                raise ValueError(
+                    f"{ctx.dataset}/{name}/{s}: {len(found)} {content_type} ({file_format}) files in the "
+                    f"portal_files ledger, expected 1: {found}"
+                )
+            hits += found
+        if not hits:
+            raise ValueError(
+                f"{ctx.dataset}/{ctx.cluster}: subsample {s} has no {content_type} ({file_format}) file under "
+                f"{names} in the portal_files ledger -- re-run download_portal_pseudobulks.py discovery"
+            )
+        aliases += hits
+    return aliases
+
+
+def primary_pseudobulk_set_aliases(ctx):
+    """The primary PseudobulkSets a principal pseudobulk is built from -- for
+    Principal Pseudobulk Set's input_file_sets. One per contributing subsample
+    (per constituent annotation, for a merged cluster)."""
+    if not _resolves_from_ledger(ctx):
+        return [f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}" for s in subsamples.unique_subsamples(ctx)]
+    _require_conn(ctx, "primary pseudobulk set aliases")
+    names = _source_annotations(ctx)
+    aliases = []
+    for s in subsamples.unique_subsamples(ctx):
+        hits = [
+            a for a in (f"{_KUNDAJE_ALIAS_PREFIX}:pseudobulk-{ctx.dataset}-{name}-{s}" for name in names)
+            if state.primary_pseudobulk_alias_exists(ctx.conn, a)
+        ]
+        if not hits:
+            raise ValueError(
+                f"{ctx.dataset}/{ctx.cluster}: subsample {s} has no primary pseudobulk set under {names} in the "
+                "Cell Annotation cache -- refresh it (downloader discovery or the driver's warm stage)"
+            )
+        aliases += hits
+    return aliases
 
 
 def prediction_set_alias(ctx):
@@ -179,6 +265,8 @@ def qc_thresholds_document_alias(ctx):
 def per_cell_quality_report_aliases(ctx):
     """One per contributing subsample's primary pseudobulk -- for Filtered
     Barcode Lists' derived_from."""
+    if _resolves_from_ledger(ctx):
+        return _ledger_file_aliases(ctx, "per_cell_qc")
     return [
         f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-per_cell_qc_tsv"
         for s in subsamples.unique_subsamples(ctx)
@@ -201,6 +289,8 @@ def primary_pseudobulk_atac_fragment_aliases(ctx):
     the cluster's QC-filtered barcode list (cluster_cfg["qc_guide"]) -- NOT
     every subsample queryable on the portal. Needed for Filtered ATAC
     Fragment Files' derived_from."""
+    if _resolves_from_ledger(ctx):
+        return _ledger_file_aliases(ctx, "fragments")
     return [
         f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-fragments_tsv_gz"
         for s in subsamples.unique_subsamples(ctx)
@@ -215,6 +305,8 @@ def primary_pseudobulk_h5ad_aliases(ctx):
     """Same situation as primary_pseudobulk_atac_fragment_aliases, but for
     the h5ad files within each contributing primary pseudobulk -- needed
     for Filtered Matrix Files' derived_from."""
+    if _resolves_from_ledger(ctx):
+        return _ledger_file_aliases(ctx, "h5ad")
     return [
         f"{_KUNDAJE_ALIAS_PREFIX}:{ctx.dataset}-{ctx.cluster}-{s}-rna_counts_mtx_h5ad"
         for s in subsamples.unique_subsamples(ctx)
