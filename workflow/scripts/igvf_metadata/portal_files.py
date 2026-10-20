@@ -129,6 +129,10 @@ _MULTIREPORT_FIELDS = (
     "cell_annotation",
     "cell_qualifier",
     "cell_type",
+    # Requested explicitly, as cell_metadata's own query does, because these same
+    # rows are also saved to the Cell Annotation cache (cell_metadata.save_multireport_rows).
+    "cell_type.term_name",
+    "cell_type.term_id",
 )
 
 # Absolute form, 3084/3087 of target files, single root
@@ -290,8 +294,12 @@ def resolve_scope(row, file_obj):
     return scope, reasons
 
 
-def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
+def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None, rows=None):
     """Returns (records, report).
+
+    rows: an already-fetched multireport_query() result, so a caller that also
+    needs the raw rows (download_portal_pseudobulks.py saves them to the Cell
+    Annotation cache) makes one GET, not two. Fetched here when None.
 
     records: one dict per selected file, ready for state.upsert_portal_file plus
     a "rel_path" and "review_reasons" the caller resolves against its own
@@ -306,7 +314,8 @@ def discover(reader, lab=DEFAULT_LAB, content_types=None, datasets=None):
     if unknown:
         raise ValueError(f"unknown content_type(s): {sorted(unknown)}")
 
-    rows = reader.get_multireport(multireport_query())
+    if rows is None:
+        rows = reader.get_multireport(multireport_query())
     log(f"multireport returned {len(rows)} PseudobulkSet row(s)")
 
     report = {

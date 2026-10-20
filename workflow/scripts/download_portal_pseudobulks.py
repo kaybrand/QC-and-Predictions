@@ -5,6 +5,10 @@ Discovery lives in igvf_metadata/portal_files.py, the transfer loop in
 igvf_metadata/downloader.py, the ledger in igvf_metadata/state.py. This file is
 just the CLI that wires them together.
 
+The same discovery GET also refreshes the Cell Annotation cache
+(cell_metadata.save_multireport_rows -- the save step fetch_if_stale uses), so a
+sync, dry run included, leaves annotations and files describing one Portal moment.
+
     python download_portal_pseudobulks.py \
         --download-root /scratch/users/$USER/pseudobulk_portal \
         --state-db resources/igvf_metadata_state.db \
@@ -62,7 +66,7 @@ from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from igvf_metadata import downloader, portal_client, portal_files, state  # noqa: E402
+from igvf_metadata import cell_metadata, downloader, portal_client, portal_files, state  # noqa: E402
 
 
 def log(msg):
@@ -122,7 +126,8 @@ def parse_args(argv=None):
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="discover and update the ledger, but transfer nothing. Safe to run anywhere.",
+        help="discover and update the ledger (and the Cell Annotation cache), but transfer nothing. "
+        "Safe to run anywhere.",
     )
     p.add_argument("--igvf-mode", default="prod", help="passed to igvf_utils (default prod)")
     p.add_argument(
@@ -199,8 +204,14 @@ def main(argv=None):
     conn = state.connect(args.state_db)
     reader = portal_client.PortalReader(igvf_mode=args.igvf_mode)
 
+    # ONE wholesale PseudobulkSet GET serves both the file ledger and the Cell
+    # Annotation cache: every set's annotation is saved (and the cache's 24h TTL
+    # restamped) before discovery narrows to lab/datasets/content_types, so the
+    # cache always reflects the same Portal moment as the files just synced.
+    rows = reader.get_multireport(portal_files.multireport_query())
+    cell_metadata.save_multireport_rows(conn, rows, _now())
     records, report = portal_files.discover(
-        reader, lab=args.lab or None, content_types=content_types, datasets=datasets
+        reader, lab=args.lab or None, content_types=content_types, datasets=datasets, rows=rows
     )
     portal_files.log_report(report)
 
