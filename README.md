@@ -25,7 +25,9 @@ the way through:
 3. Running scE2G (imported as a Snakemake module from the external `scE2G` repo)
 4. Reformatting predictions/lists into the standard sharing format
 5. Isolating candidate E2G pairs
-6. Generating scE2G feature tables
+6. *(Not a default output on this branch.)* scE2G feature tables — the full scE2G
+   predictions table already carries every feature column. `isolate_feature_table`
+   runs only when explicitly targeted
 7. Generating IGVF Portal manifests (`workflow/scripts/manage_igvf_metadata.py`)
    — the primary destination on this branch, sequenced automatically as one
    of the driver's own stages, see [Running](#running) — and, run
@@ -252,7 +254,7 @@ ships 3.7.17, which fails in a way that does not obviously point at SQLite.
 - **`default`** — everything, including the live IGVF Portal GET that populates
   the CellAnnotation cache, portal-format reformatting, and manifest generation.
 - **`local_only`** — everything that needs no Portal contact whatsoever
-  (filtered fragments/RNA matrices, all scE2G predictions/candidates/features,
+  (filtered fragments/RNA matrices, all scE2G predictions and candidates,
   QC report, IGV tracks, EnhancerList and RNA matrix packaging). It never opens
   `state.db`, never reads the CellAnnotation snapshot, and requests no
   reformat target — so Portal availability cannot affect it. Set per-run with
@@ -531,7 +533,7 @@ snapshot described below), keyed through
 `cell_annotations.py`'s `annotation_lookup_key()` (which resolves an
 ATAC-only variant cluster's real CellAnnotation under its base, non-suffixed
 name). **A quality-passing cluster with no cached CellAnnotation yet still
-gets full scE2G predictions/candidates/features** — it's simply not
+gets full scE2G predictions and candidates** — it's simply not
 reformatted into portal format until `manage_igvf_metadata.py` has warmed
 the cache for it. Core file generation is never blocked by Portal metadata
 availability, and this is intentional: `state.db`'s cache is populated only
