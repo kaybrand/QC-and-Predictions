@@ -103,7 +103,9 @@ rule all:
     input:
         get_reformat_output_files(),
         get_candidates_output_files(),
-        get_features_output_files(),
+        # No scE2G feature tables (get_features_output_files) on this branch: the full
+        # scE2G predictions table already carries every feature column. The rule and
+        # manage_features_manifest remain, for an explicitly named Synapse target only.
         get_qc_stats_targets(),
         get_igv_track_files(),
         get_rna_matrix_packages(),
