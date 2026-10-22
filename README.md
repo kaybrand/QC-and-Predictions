@@ -463,12 +463,17 @@ Portal with a read-only `get_by_alias` before concluding the ledger is stale —
 and equally, before "fixing" it, since resetting a ledger row whose object is
 genuinely still live just generates a spurious PATCH of identical values.
 
-### One wholesale GET, then per-dataset derivation
+### One filtered, paged fetch, then per-dataset derivation
 
-`cell_metadata.fetch_if_stale` issues a single multireport GET covering EVERY
-primary pseudobulk on the portal (24h TTL, tracked by one global row) and saves
-all of it to `state.db`'s raw `cell_metadata_primary_pseudobulks` /
-`cell_metadata_principal_pseudobulks` tables. `cell_metadata.derive_scopes` then
+`cell_metadata.fetch_if_stale` (24h TTL, tracked by one global row) fetches every
+PseudobulkSet that has a fragments file (multiome; RNA-only sets are skipped)
+plus every Engreitz-lab PseudobulkSet (our principal sets), as paged `/search/`
+reads of 500 rows with a 10 s pause between pages, and saves all of it to
+`state.db`'s raw `cell_metadata_primary_pseudobulks` /
+`cell_metadata_principal_pseudobulks` tables. It replaced one `limit=all`
+`/multireport/` GET over all ~16,000 sets, which the Portal could no longer
+serve (`/multireport/` returns HTTP 500 at 1,000 rows; `/search/` returns 200
+rows in ~6 s). A page-count mismatch raises rather than saving a partial cache. `cell_metadata.derive_scopes` then
 turns that raw cache into the per-`(dataset, cluster)` `cell_annotations` view,
 using each cluster's own `qc_guide` to pick a winner where contributing
 primaries disagree on Cell Annotation — which is why derivation is per-config
