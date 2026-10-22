@@ -72,6 +72,15 @@ READ_RETRY_ATTEMPTS = 3
 READ_RETRY_BASE_SECONDS = 30.0
 READ_RETRY_BACKOFF = 3.0  # 30 s, then 90 s
 
+# Paged /search/ reads (get_search_paged). Measured 2026-10-21 against 15.8k
+# PseudobulkSets: /multireport/ took 34 s for 200 rows and returned HTTP 500 at
+# 1,000; /search/ returned the same fields for 200 rows in 6 s, and 500-row pages
+# in 7-40 s. The timeout is per page and generous because the first pages are
+# the slowest and igvf_utils' 60 s default is too close to them.
+SEARCH_PAGE_SIZE = 500
+SEARCH_PAGE_PAUSE_SECONDS = 10
+SEARCH_PAGE_TIMEOUT_SECONDS = 180
+
 # Timeout for the one probe we cannot avoid (a custom, non-standard host). Matches
 # igvf_utils' own iu.TIMEOUT for real requests, rather than the 2 s its probe uses.
 MODE_PROBE_TIMEOUT_SECONDS = 60
@@ -308,6 +317,50 @@ class PortalReader:
         # pseudobulk on the Portal), and the one whose failure degrades a whole
         # driver run to "continuing with the existing raw cache".
         return _retry_reads("multireport GET", _get)
+
+    def get_search_paged(self, params, page_size=SEARCH_PAGE_SIZE,
+                         pause_seconds=SEARCH_PAGE_PAUSE_SECONDS,
+                         timeout=SEARCH_PAGE_TIMEOUT_SECONDS):
+        """Every row of a /search/ query, fetched in pages of `page_size`
+        (sorted by @id, `pause_seconds` between pages, each page retried like
+        any other read). `params` is a list of (key, value) query pairs WITHOUT
+        limit/from/sort. Returns the @graph rows, de-duplicated by @id.
+
+        Raises RuntimeError unless the unique rows add up to the Portal's
+        reported `total`: a set added mid-fetch can shift a page boundary, and a
+        partial result must never be mistaken for a complete one."""
+        import urllib.parse
+
+        import requests
+        import igvf_utils.utils as iuu
+
+        conn = self._connection()
+        url = iuu.url_join([conn.igvf_mode.url, "search/?"])
+        rows, frm, total = {}, 0, None
+        while total is None or frm < total:
+            if frm:
+                time.sleep(pause_seconds)
+            query = urllib.parse.urlencode(
+                list(params) + [("limit", str(page_size)), ("from", str(frm)), ("sort", "@id")]
+            )
+
+            def _get(page_url=url + query):
+                response = requests.get(
+                    page_url, auth=conn.auth, timeout=timeout, headers=iuu.REQUEST_HEADERS_JSON
+                )
+                response.raise_for_status()
+                return response.json()
+
+            page = _retry_reads(f"search GET (rows {frm}-{frm + page_size})", _get)
+            graph = page.get("@graph", [])
+            total = page.get("total", 0)
+            rows.update((row["@id"], row) for row in graph)
+            if not graph:
+                break
+            frm += page_size
+        if len(rows) != total:
+            raise RuntimeError(f"paged search incomplete: {len(rows)} unique rows, Portal reports {total}")
+        return list(rows.values())
 
 
 def _tsv_cell(value):
