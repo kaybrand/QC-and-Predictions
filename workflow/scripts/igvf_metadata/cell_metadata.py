@@ -70,7 +70,7 @@ subsamples.subsamples_by_frequency) resolves this cleanly instead of leaving
 the scope permanently uncached.
 
 2026-07-22 correction: EVERY primary/principal-pseudobulk row the
-multireport GET returns is saved unconditionally, to
+Portal fetch returns is saved unconditionally, to
 state.cell_metadata_primary_pseudobulks/cell_metadata_principal_pseudobulks
 -- NOT gated on whether it happens to match a currently-configured local
 cluster, or whether that cluster's whole group validates. The earlier
@@ -109,15 +109,27 @@ SHAREABLE_TSV_NAME = "cell_annotation_table.tsv"
 # Confirmed against a real production call (2026-07-22): input_file_sets/samples/cell_type
 # all come back as fully-embedded objects regardless of which sub-fields are requested here
 # (no "@type" sub-field ever appears on input_file_sets entries -- classification instead
-# uses their "@id" path prefix, see pseudobulk_sets.classify). limit=all is required: the multireport
-# endpoint otherwise silently caps at a default page size (25, confirmed) instead of
-# returning every PseudobulkSet.
-_MULTIREPORT_QUERY = (
-    "type=PseudobulkSet&status%21=deleted&limit=all"
-    "&field=%40id&field=cell_annotation&field=aliases&field=cell_type"
-    "&field=cell_type.term_name&field=cell_type.term_id&field=summary&field=cell_qualifier"
-    "&field=input_file_sets&field=lab&field=samples&field=status"
+# uses their "@id" path prefix, see pseudobulk_sets.classify).
+_CACHE_FIELDS = (
+    "@id", "cell_annotation", "aliases", "cell_type", "cell_type.term_name", "cell_type.term_id",
+    "summary", "cell_qualifier", "input_file_sets", "lab", "samples", "status",
 )
+# What the cache fetches (2026-10-21). It used to be ONE /multireport/?limit=all GET of
+# every PseudobulkSet; at ~15.8k sets (8x in two months, mostly RNA-only) the Portal
+# cut that response off or returned HTTP 500. The cache now holds only sets this
+# pipeline can use, fetched in pages from /search/ (portal_client.get_search_paged):
+#   - every PseudobulkSet with a fragments file (multiome-processable; RNA-only sets
+#     have none and are out of scope), and
+#   - every Engreitz-lab set (our own principal pseudobulks), so they are never
+#     missed even if one lacked fragments.
+# Verified 2026-10-21 against the wholesale cache: same row shape, all 1,589 in-scope
+# primaries and all 191 principals present, and derive_scopes identical for all 238
+# configured clusters.
+_CACHE_QUERIES = (
+    ("PseudobulkSets with a fragments file", (("files.content_type", "fragments"),)),
+    ("Engreitz-lab PseudobulkSets", (("lab.@id", "/labs/jesse-engreitz/"),)),
+)
+_CACHE_FETCH_ATTEMPTS = 2  # a set added mid-fetch can make one pass come up short
 
 _SHAREABLE_COLUMNS = [
     "dataset",
@@ -265,14 +277,16 @@ def _alias_suffix(alias):
 
 
 def fetch_if_stale(conn, reader):
-    """The NETWORK half. One wholesale multireport GET per stale cache, saving
-    EVERY primary/principal pseudobulk row the portal returns to the raw cache
-    tables. Returns True if a GET actually happened, False if the cache was
+    """The NETWORK half. Per stale cache, one paged fetch of every PseudobulkSet
+    this pipeline can use (see _CACHE_QUERIES: sets with a fragments file, plus
+    Engreitz-lab sets), saving every primary/principal row to the raw cache
+    tables. Returns True if a fetch actually happened, False if the cache was
     still fresh.
 
     Deliberately knows nothing about which clusters anyone cares about: the
-    GET's scope is "every PseudobulkSet on the portal", and all of it is saved
-    unconditionally (see the module docstring's 2026-07-22 correction). Turning
+    fetch's scope is "every multiome-processable PseudobulkSet on the portal",
+    and all of it is saved unconditionally (see the module docstring's
+    2026-07-22 correction). Turning
     that raw cache into the per-(dataset, cluster) `cell_annotations` view is
     derive_scopes' job, and needs no network at all.
 
@@ -287,13 +301,32 @@ def fetch_if_stale(conn, reader):
     """
     last_fetch = state.latest_cell_annotation_fetch(conn)
     if not _is_stale(last_fetch):
-        log(f"cell_annotations cache still fresh (last fetched {last_fetch}) -- skipping multireport GET")
+        log(f"cell_annotations cache still fresh (last fetched {last_fetch}) -- skipping the Portal fetch")
         return False
-    log(f"cell_annotations cache {'empty' if not last_fetch else 'stale'} -- issuing multireport GET")
+    log(f"cell_annotations cache {'empty' if not last_fetch else 'stale'} -- fetching PseudobulkSets")
 
-    rows = reader.get_multireport(_MULTIREPORT_QUERY)
+    rows = fetch_cache_rows(reader)
     save_multireport_rows(conn, rows, _now())
     return True
+
+
+def fetch_cache_rows(reader):
+    """The rows the Cell Annotation cache holds: _CACHE_QUERIES, each paged from
+    /search/, merged by @id. A pass that comes up short (the Portal's total moved
+    mid-fetch) is retried once; anything else propagates, like any failed read."""
+    base = [("type", "PseudobulkSet"), ("status!", "deleted")] + [("field", f) for f in _CACHE_FIELDS]
+    for attempt in range(1, _CACHE_FETCH_ATTEMPTS + 1):
+        try:
+            rows = {}
+            for label, filters in _CACHE_QUERIES:
+                got = reader.get_search_paged(base + list(filters))
+                log(f"fetched {len(got)} {label}")
+                rows.update((r["@id"], r) for r in got)
+            return list(rows.values())
+        except RuntimeError as e:
+            if attempt == _CACHE_FETCH_ATTEMPTS:
+                raise
+            log(f"{e} -- retrying the whole fetch")
 
 
 def save_multireport_rows(conn, rows, now):
@@ -305,9 +338,9 @@ def save_multireport_rows(conn, rows, now):
     calls it too, on the rows its file discovery already fetched -- the same
     wholesale `type=PseudobulkSet&status!=deleted&limit=all` GET -- so a sync
     refreshes Cell Annotations at the same moment as the file ledger, without a
-    second request. `rows` MUST be the complete, unfiltered multireport: the
-    timestamp written here tells every later fetch_if_stale the whole cache is
-    current. Annotations can change until a pseudobulk is released, which is
+    second request. `rows` MUST be a complete fetch -- fetch_cache_rows() or the
+    downloader's wholesale discovery, never a partial page: the timestamp written
+    here tells every later fetch_if_stale the whole cache is current. Annotations can change until a pseudobulk is released, which is
     why both paths keep upserting.
     """
     # Recorded unconditionally, before any per-scope validation: the TTL is about
