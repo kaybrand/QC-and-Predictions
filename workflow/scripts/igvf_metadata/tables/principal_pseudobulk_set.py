@@ -85,7 +85,7 @@ TABLE = registry.register(
         build_alias=build_alias,
         required_columns=["aliases", "award", "lab", "file_set_type"],
         constant_fields={
-            "file_set_type": "pseudobulk analysis",
+            "file_set_type": "gene expression pseudobulk",
             "merged": True,
             "submitter_comment": (
                 "This principal pseudobulk set is based on status: 'in progress' data and will be "
