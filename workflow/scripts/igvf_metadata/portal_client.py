@@ -75,9 +75,11 @@ READ_RETRY_BACKOFF = 3.0  # 30 s, then 90 s
 # Paged /search/ reads (get_search_paged). Measured 2026-10-21 against 15.8k
 # PseudobulkSets: /multireport/ took 34 s for 200 rows and returned HTTP 500 at
 # 1,000; /search/ returned the same fields for 200 rows in 6 s, and 500-row pages
-# in 7-40 s. The timeout is per page and generous because the first pages are
-# the slowest and igvf_utils' 60 s default is too close to them.
-SEARCH_PAGE_SIZE = 500
+# in 7-40 s. On 2026-10-22 a cold 500-row first page returned HTTP 500 after 49 s
+# while 200 rows took 8.5 s, so pages are 200 rows and a 5xx page is retried.
+# The timeout is per page and generous because the first pages are the slowest
+# and igvf_utils' 60 s default is too close to them.
+SEARCH_PAGE_SIZE = 200
 SEARCH_PAGE_PAUSE_SECONDS = 10
 SEARCH_PAGE_TIMEOUT_SECONDS = 180
 
@@ -90,7 +92,7 @@ def _log(msg):
     print(f"[portal_client] {msg}", file=sys.stderr)
 
 
-def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS):
+def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS, retry_server_errors=False):
     """Call fn(), retrying with exponential backoff on transient network errors.
 
     STRICTLY FOR READS. Never wrap invoke_register or anything else that can
@@ -113,7 +115,10 @@ def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS):
 
     Only genuinely transient exceptions are retried; an HTTPError (a real 4xx/5xx
     answer from the server) is re-raised immediately, because retrying a
-    considered "no" just delays the report.
+    considered "no" just delays the report. The exception is
+    `retry_server_errors=True`, which also retries 5xx answers: the Portal's
+    /search/ returns HTTP 500 when a cold query times out server-side, and the
+    same page succeeds seconds later.
     """
     import requests  # deferred, same as elsewhere in this module
 
@@ -126,7 +131,11 @@ def _retry_reads(description, fn, attempts=READ_RETRY_ATTEMPTS):
     for attempt in range(1, attempts + 1):
         try:
             return fn()
-        except transient as e:
+        except (transient + (requests.exceptions.HTTPError,)) as e:
+            if isinstance(e, requests.exceptions.HTTPError) and not (
+                retry_server_errors and e.response is not None and e.response.status_code >= 500
+            ):
+                raise
             if attempt == attempts:
                 _log(f"{description}: {type(e).__name__} on final attempt {attempt}/{attempts} -- giving up")
                 raise
@@ -323,7 +332,7 @@ class PortalReader:
                          timeout=SEARCH_PAGE_TIMEOUT_SECONDS):
         """Every row of a /search/ query, fetched in pages of `page_size`
         (sorted by @id, `pause_seconds` between pages, each page retried like
-        any other read). `params` is a list of (key, value) query pairs WITHOUT
+        any other read, and also on a 5xx answer). `params` is a list of (key, value) query pairs WITHOUT
         limit/from/sort. Returns the @graph rows, de-duplicated by @id.
 
         Raises RuntimeError unless the unique rows add up to the Portal's
@@ -351,7 +360,8 @@ class PortalReader:
                 response.raise_for_status()
                 return response.json()
 
-            page = _retry_reads(f"search GET (rows {frm}-{frm + page_size})", _get)
+            page = _retry_reads(f"search GET (rows {frm}-{frm + page_size})", _get,
+                                retry_server_errors=True)
             graph = page.get("@graph", [])
             total = page.get("total", 0)
             rows.update((row["@id"], row) for row in graph)
