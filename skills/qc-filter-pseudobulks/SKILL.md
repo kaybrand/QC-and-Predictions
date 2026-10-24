@@ -6,161 +6,193 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep
 
 # QC Filter Pseudobulks → Filtered Multiome Datasets
 
-This skill converts pseudobulks to filtered multiome datasets (ATAC + RNA) using custom QC guides,
-then generates scE2G configuration files. It is used after the user has investigated per-cell QC
-plots and decided on a filtering strategy for each cluster.
+Turns downloaded IGVF primary pseudobulks into QC-passing ATAC fragment files and RNA
+count matrices, using per-cluster QC guides built from thresholds a human chose. Since
+2026-10 this all happens inside the **QC-and-Predictions** repo (`igvf-portal-submission`
+branch): QC guides come from one plotting script, and the filtering + scE2G config are
+done by the pipeline's own rules. Do not hand-run the old per-dataset shell templates.
 
-## Gather Inputs
-
-Ask the user (or read from context) for:
-- **Dataset name** (e.g. `igvf7`) — used in output paths and config file names
-- **Pseudobulks directory** — root dir containing `annotation-{cell_type}` or `annotation-{cell_type}-IGVF*` subdirs
-- **Cluster list** — names and any special renaming (e.g. `hcasm_calcification` → `hcasm_calcification_d6`)
-- **QC guide for each cluster** — full path to the `.tsv.gz` file (barcode / subsample / analysis_accession)
+**Never use `/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks`**
+(retiring) for a new dataset — not for scripts, guides, outputs, `data_dir`, or reference
+files. Never write to the shared scE2G checkout (`.../Users/kaybrand/scE2G_preprint/scE2G`).
 
 ## Key Paths
 
 ```
-WDIR=/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks
-Scripts:   $WDIR/scripts/filter_atac_fragments.py
-           $WDIR/scripts/filter_rna_counts.py
-QC guides: $WDIR/plots/{dataset}/{cluster}/
-Output:    $WDIR/multiome_data/{dataset}/{cluster}/
-Logs:      $WDIR/multiome_data/{dataset}/logs/
-Pseudobulks (default):   /oak/stanford/groups/akundaje/sbaek1/web/igvf/pseudobulk/{dataset}/pseudobulks/
-           Use this as the default when the user does not specify a path. If the user provides a $SCRATCH path, use that instead.
-GTF:       /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz
-Chrom sizes (default): $WDIR/reference/IGVF.DACC.GRCh38.chrom.sizes.tsv
-Chrom sizes (alt):     $WDIR/reference/GRCh38_EBV.no_alt.chrom.sizes.tsv
-scE2G config tables: /oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/config/mine/tables/
-scE2G config yamls:  /oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/config/mine/
-Template ATAC script: /oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/filter_atac_igvf7.sh
-Template RNA script:  /oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/filter_rna_igvf7.sh
+REPO=/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC_pseudobulks-igvf-portal-submission
+Pseudobulks root:  /scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026
+                   (= --download-root of workflow/scripts/download_portal_pseudobulks.py;
+                   the name is historical -- the 2026-10 syncs land here too; do not rename,
+                   state.db's portal_files.local_path stores absolute paths into it)
+  layout:          {root}/{dataset}/pseudobulks/{annotation}-{IGVFSM...}/          (IGVFDS* datasets)
+                   {root}/{dataset}/pseudobulks/annotation-{annotation}-{IGVFSM...}/ (igvfN datasets)
+  per set:         fragments.tsv.gz, rna_counts_mtx.h5ad, per_cell_qc.tsv.gz
+Per-cell QC tables: $REPO/results/QC_datatables/{dataset}_data/{cluster}_per_cell_qc.tsv
+QC plots + guides:  $REPO/results/QC_plots/{dataset}/{cluster}/
+Plotting script:    $REPO/local_scripts/plot_per_cell_qc.R          (conda env: qc_per_cell)
+Table builder:      $REPO/workflow/scripts/build_qc_datatables.py   (env: igvf_utils_env)
+Filter scripts:     $REPO/workflow/scripts/filter_atac_fragments.py, filter_rna_counts.py
+                    (run by workflow/rules/filter_pseudobulks.smk; env workflow/envs/filter_multiome_env.yaml)
+Filtered outputs:   $REPO/results/multiome_data/{dataset}/{cluster}/atac_fragments_{dataset}_{cluster}.tsv.gz(.tbi)
+                    $REPO/results/multiome_data/{dataset}/{cluster}/rna_count_matrix_{dataset}_{cluster}/
+Chrom sizes:        $REPO/reference/IGVF.DACC.GRCh38.chrom.sizes.tsv
+GTF:                /oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/uniformly_processed/GENCODEv43/IGVFFI9573KOZR.gtf.gz
+Pipeline configs:   $REPO/workflow/config/{dataset}_pipeline_config.yaml  (gitignored)
+scE2G cell_clusters: $REPO/workflow/config/{dataset}_cell_clusters.tsv   (written by the pipeline)
+Envs:               /oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/{qc_per_cell,igvf_utils_env,filter_multiome}
 ```
 
-Always use `IGVF.DACC.GRCh38.chrom.sizes.tsv` as the default chromosome sizes file.
-Offer `GRCh38_EBV.no_alt.chrom.sizes.tsv` as an alternative only if the user asks.
+`$REPO/results/plots/` holds the human QC guides of igvf9/igvf13 only — never write
+placeholder output there. For IGVFDS datasets the human guides live in `results/QC_plots/`.
 
-## QC Guide Format
-
-QC guides are gzipped TSV files with a header and three columns:
-```
-barcode\tsubsample\tanalysis_accession
-AAACAGCCACATAACT_IGVFSM1016TCPU\tIGVFSM0405BZBU\tIGVFDS0436AMDC
-```
-
-An annotation table (`annotation_{dataset}_rna_barcodes_human.tsv`, columns: analysis_accession,
-barcode, subsample, annotation) is a useful authoritative source of all barcodes when available.
-However, it may not exist for every dataset — it may need to be sourced from another consortium
-lab or reconstructed. Do not assume it is available; ask the user.
-
-Verify that barcodes in a new QC guide overlap with those in the existing
-`$WDIR/plots/{dataset}/{cluster}/filtered_barcodes_with_subsamples.tsv.gz`
-before proceeding. If overlap is negligible or zero, the most likely cause is an
-**ATAC/RNA onlist mismatch**: the barcodes may have been drawn from the ATAC 10x Genomics
-onlist rather than the RNA onlist (or vice versa). To diagnose this, check which onlist
-the barcodes belong to. For IGVF7 the onlists are:
-
-```
-RNA onlist:  /oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/rna_whitelist.Robj  # object name: rna_wlist
-ATAC onlist: /oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/atac_whitelist.Robj # object name: atac_wlist
-```
-
-For other datasets, locate the equivalent onlist files and check barcode membership accordingly.
-
-## Common QC Guide Strategies
-
-| Situation | Guide name pattern | Source |
-|---|---|---|
-| Standard QC thresholds, no quirks | `filtered_barcodes_with_subsamples.tsv.gz` | Existing file |
-| Remove a bad subsample from QC-filtered set | `QC_filtered_excluding_{SUBSAMPLE}.tsv.gz` | Filter existing filtered_barcodes |
-| Use annotation table, remove bad subsample | `McGinnis_filtered_excluding_{SUBSAMPLE}.tsv.gz` | Filter annotation table |
-| Isolate a specific subsample's passing cells | `QC_filtered_{SUBSAMPLE}.tsv.gz` | Subset existing filtered_barcodes |
-
-**Splitting one pseudobulk into multiple output clusters** (e.g. d6 vs d10): use `CELL_TYPE`
-(the directory name) for pseudobulk lookup and `OUT_NAME` for output naming. Both output clusters
-point to the same pseudobulk directory but use different QC guides to select disjoint barcode sets.
-
-**Merging multiple pseudobulks into one output cluster**: this is common when pseudobulks were
-created at the subsample level and you want a single combined output. List all matching
-`annotation-{cell_type}-IGVF*` directories as sources — `filter_atac_fragments.py` and
-`filter_rna_counts.py` automatically concatenate all matching directories for a given `--cell-type`.
-The QC guide should contain barcodes from all subsamples to be merged.
-
-## Step 1 — Create Output Directories
+## Step 1 — Per-cell QC tables (one per cluster)
 
 ```bash
-mkdir -p $WDIR/multiome_data/{dataset}/{cluster}  # one per output cluster
-mkdir -p $WDIR/multiome_data/{dataset}/logs
+cd $REPO
+/oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/igvf_utils_env/bin/python \
+  workflow/scripts/build_qc_datatables.py \
+  --pseudobulks-root /scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026 \
+  --out-dir $REPO/results --datasets IGVFDS... [--force]
 ```
 
-## Step 2 — Filter ATAC Fragments (Slurm array job)
+Concatenates every subsample's `per_cell_qc.tsv.gz` (header once, subsample dirs in sorted
+order) and normalizes the new Portal column names (`analysis_set_accession` →
+`analysis_accession`, `barcode_sample` → `barcode`). Run it as a job, not on a login node.
 
-Environment: `mamba activate e2g_jamboree` + `ml biology bedops`
-Script: `$WDIR/scripts/filter_atac_fragments.py`
+**Merged cluster** (several annotations → one cluster, e.g. IGVF7's
+`hcasm_calcification` = `hcasm_calcification_d10` + `hcasm_calcification_d6`): build one
+table spanning both, keyed by the merged cluster name:
 
-Key arguments:
-- `--qc-guide`    path to the QC guide .tsv.gz
-- `--pseudobulks` root pseudobulks directory
-- `--cell-type`   annotation name used in directory lookup (string after `annotation-`)
-- `--chrom-sizes` chromosome sizes file (default: `IGVF.DACC.GRCh38.chrom.sizes.tsv`)
-- `--out`         output path: `$OUTDIR/{out_name}/filtered_ATAC_fragments_{out_name}.tsv.gz`
-
-The script automatically falls back to `annotation-{cell_type}` (no `-IGVF*` suffix) when
-pseudobulks were not created at the subsample level.
-
-Copy and adapt the template: `/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/filter_atac_igvf7.sh`
-
-## Step 3 — Filter RNA Count Matrices (Slurm array job)
-
-Environment: `mamba activate filter_multiome`
-Script: `$WDIR/scripts/filter_rna_counts.py`
-
-Key arguments:
-- `--qc-guide`    path to the QC guide .tsv.gz
-- `--pseudobulks` root pseudobulks directory
-- `--cell-type`   annotation name used in directory lookup
-- `--out`         output path: `$OUTDIR/{out_name}/rna_count_matrix_{dataset}_{out_name}.mtx`
-- `--gtf`         GTF file for Ensembl ID → gene symbol conversion
-- `--standard-chromosomes-only`  always use this flag
-- `--log`         `$OUTDIR/logs/{out_name}_gtf_mapping.txt`
-
-Always use gene symbols (default). Do NOT use `--ensemblIDs-as-genes`.
-Per-cluster run logs go to `$OUTDIR/logs/{out_name}_rna_run.log` via `2>> $RUN_LOG`.
-
-Memory: 32G per cluster (each array task is an independent job).
-Copy and adapt the template: `/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/filter_rna_igvf7.sh`
-
-## Step 4 — Generate scE2G Config Table
-
-Before creating either config file, check whether `{dataset}_config.tsv` and `{dataset}_config.yaml` already exist. If the dataset config already exists, **add a new row** to the existing table rather than recreating it, and leave the YAML unchanged.
-
-File: `/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/config/mine/tables/{dataset}_config.tsv`
-
-Columns (tab-separated, leave HiC_file / HiC_type / HiC_resolution / alt_TSS / alt_genes empty):
-```
-cluster\trna_matrix_file\tatac_frag_file\tHiC_file\tHiC_type\tHiC_resolution\talt_TSS\talt_genes\tmodel_dir
-{cluster}\t{OUTDIR}/{cluster}/rna_count_matrix_{dataset}_{cluster}\t{OUTDIR}/{cluster}/filtered_ATAC_fragments_{cluster}.tsv.gz\t\t\t\t\t\tmodels/multiome_powerlaw_v3,models/scATAC_powerlaw_v3
+```bash
+cd $REPO/workflow/scripts && /oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/igvf_utils_env/bin/python -c "
+import build_qc_datatables as b
+print(b.build_one('/scratch/users/kaybrand/IGVF_Data_Portal_download_08-2026', 'IGVFDS3445MTOM',
+      'hcasm_calcification', ['hcasm_calcification_d10', 'hcasm_calcification_d6'],
+      '$REPO/results/QC_datatables/IGVFDS3445MTOM_data/hcasm_calcification_per_cell_qc.tsv'))"
 ```
 
-Note: `rna_matrix_file` is the MTX **directory** path (no trailing slash, no extension).
-Reference example: `/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/config/mine/tables/igvf10_config.tsv`
+Check the row count equals the sum of the constituents and that no barcode is duplicated.
 
-## Step 5 — Generate scE2G Config YAML
+## Step 2 — QC plots and QC guides (human thresholds)
 
-File: `/oak/stanford/groups/engreitz/Users/kaybrand/scE2G_preprint/scE2G/config/mine/{dataset}_config.yaml`
+The human reviews `ATAC_QC_plots.pdf` / `RNA_QC_plots.pdf` and supplies thresholds,
+usually as a TSV with columns `Dataset, Cluster, RNA UMIs (min), Gene Count (min),
+% mito (max), % ribosomal (max), ATAC fragments (min), nucleosomal signal (max),
+TSS enrichment (min)`. Map them onto the script's flags (blank = script default):
 
-Copy `igvf10_config.yaml` and replace all instances of `igvf10` with `{dataset}`.
-All other fields (model paths, reference files, workflow params) remain unchanged.
+| Threshold column | flag | default |
+|---|---|---|
+| RNA UMIs (min) | `--rna-min` | 1000 |
+| Gene Count (min) | `--gene-min` | 0 |
+| % mito (max) | `--pct-mt-max` | 30 |
+| % ribosomal (max) | `--pct-ribo-max` | 100 (no cutoff) |
+| ATAC fragments (min) | `--atac-min` | 1000 |
+| nucleosomal signal (max) | `--nuc-max` | 1.5 |
+| TSS enrichment (min) | `--tss-min` | 3 |
 
-## Checklist Before Submitting Jobs
+Also available: `--rna-max --gene-max --atac-max --pct-dup-max --frip-min`.
 
-- [ ] QC guide barcodes verified against existing `filtered_barcodes_with_subsamples.tsv.gz` (non-zero overlap); if zero, check ATAC/RNA onlist membership
-- [ ] Output directories created on Oak
-- [ ] Slurm log directory for job stdout/stderr exists on `$SCRATCH`
-- [ ] ATAC script uses `IGVF.DACC.GRCh38.chrom.sizes.tsv` (default)
-- [ ] ATAC script uses correct `CELL_TYPE` (directory lookup) vs `OUT_NAME` (output name)
-- [ ] RNA script includes `--standard-chromosomes-only` and `--log`
-- [ ] RNA script memory set to 32G per task
-- [ ] Config table `rna_matrix_file` points to directory (no extension)
-- [ ] Config yaml has correct dataset name in `results_dir` and `IGV_dir`
+```bash
+source /oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/etc/profile.d/conda.sh
+source /oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/etc/profile.d/mamba.sh
+mamba activate qc_per_cell
+cd $REPO/results
+Rscript $REPO/local_scripts/plot_per_cell_qc.R \
+  QC_datatables/{dataset}_data/{cluster}_per_cell_qc.tsv QC_plots/{dataset}/{cluster} \
+  --rna-min 1000 --gene-min 1000 --pct-mt-max 30 --atac-min 10000 --nuc-max 1 --tss-min 3
+```
+
+Writes, per cluster: the plots, `filtered_barcodes_with_subsamples.tsv.gz` (**the QC
+guide**), `filtered_cell_subsample_metrics.tsv` (read by the pipeline's quality gate) and
+`qc_thresholds.tsv` (attached to the IGVF QC_documents manifest). Keep all four together —
+the pipeline derives the other paths from the guide's directory. Save the exact commands
+(e.g. a small script under `$SCRATCH/temp`) and verify each `qc_thresholds.tsv` matches
+what the human gave. For a merged cluster with the same thresholds as its constituents,
+cells kept should equal the constituents' sum.
+
+Exploratory plots made before thresholds exist use placeholders (`--rna-min 1000
+--gene-min 1000 --pct-mt-max 30 --atac-min 1000 --nuc-max 1.5 --tss-min 3`); their
+guides are **not** human-approved — never point a config at them.
+
+## QC guide format
+
+Gzipped TSV, header + three columns:
+```
+barcode\tsubsample\tanalysis_accession
+AAACAGCCAGGAACAT_IGVFSM1016TCPU\tIGVFSM0405BZBU\tIGVFDS0436AMDC
+```
+`barcode` is the full `{16-mer}_{IGVFSM...}` string — the same string as column 4 of
+`fragments.tsv.gz` and the h5ad `obs_names`, old and new datasets alike. Its IGVFSM suffix
+can differ from `subsample` (multiplexed lanes); matching is always on the full string,
+never the 16-mer alone.
+
+If a guide's barcodes barely overlap the pseudobulk's, suspect an ATAC/RNA onlist mix-up
+(IGVF7 onlists: `/oak/stanford/groups/engreitz/Users/kaybrand/IGVF_Consortium/IGVF7/{rna,atac}_whitelist.Robj`,
+objects `rna_wlist` / `atac_wlist`).
+
+## Step 3 — Pipeline config (one per dataset)
+
+```bash
+cd $REPO; R=$REPO/results
+/oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/igvf_utils_env/bin/python \
+  local_scripts/generate_pipeline_configs.py \
+  --datasets IGVFDS... --qc-guide-dir $R/QC_plots \
+  --data-dir $R --output-dir $R --qc-datatables-dir $R/QC_datatables [--force]
+```
+
+- The dataset key must be the IGVFDS accession (download dirs and Portal aliases use it).
+- Each cluster: `pseudobulk_annotation` (the dir annotation; becomes `--cell-type`),
+  `qc_guide`, `models: [multiome_powerlaw_v3, scATAC_powerlaw_v3]`.
+- **Merged cluster** (igvf18 `mcf7` style): `pseudobulk_annotation: a,b`
+  (comma-separated) and `submitter_comment: Merged a and b pseudobulks`. Both filter
+  scripts split on the comma, find each annotation's dirs, filter them all against the
+  one merged guide and concatenate (verified for IGVF7: 9 dirs, all 5,588 guide barcodes
+  found exactly once). The generator's `MERGED_CLUSTERS` drops the constituents as
+  separate clusters — keep them only if the human wants both.
+- `--force` rewrites only the datasets named in `--datasets`.
+
+## Step 4 — Cell Annotation (the Portal is the source of truth)
+
+CellAnnotation / SampleTermName / SampleTermID come from the IGVF Portal through the 24h
+cache in `$REPO/resources/igvf_metadata_state.db` (refreshed by the downloader's discovery
+GET or the driver's warm stage) — never from `lab_annotations_with_cl.tsv` or
+`cell_annotations_by_dataset_cluster.tsv` (snapshots; do not edit them). A cluster missing
+any of the three on the Portal is an error, not a blank.
+
+A merged cluster otherwise gets the bare cell-type term. To give it a specific annotation,
+or to correct a Portal typo in our own records, set a durable override — its own table,
+never written by a cache refresh, re-applied on every derive:
+
+```bash
+/oak/stanford/groups/engreitz/Users/kaybrand/software/miniforge3/envs/igvf_utils_env/bin/python \
+  $REPO/workflow/scripts/set_cell_annotation_override.py \
+  --state-db $REPO/resources/igvf_metadata_state.db --dataset IGVFDS3445MTOM --cluster hcasm_calcification \
+  --cell-annotation "calcification HCASMC 2105 hTERT dCas9 smooth muscle cell of the coronary artery derived from HCASMC-hTERT" \
+  --cell-qualifier "calcification HCASMC 2105 hTERT dCas9" --reason "merged d6+d10; no day"
+# --list shows all overrides; --clear removes one
+```
+
+## Step 5 — Filtering and scE2G config: the pipeline does it
+
+```bash
+cd $REPO
+sbatch resources/run_pipeline.sbatch {dataset} default -n                          # ALWAYS dry-run first
+sbatch resources/run_pipeline.sbatch {dataset} default --snakemake-arg=--retries=1
+```
+
+`atac_fragment_file` / `rna_count_matrix` run the filter scripts with the chrom sizes,
+GTF, `--standard-chromosomes-only` and log flags built in; `write_scE2G_config.py` writes
+`workflow/config/{dataset}_cell_clusters.tsv` at parse time. Do not hand-write scE2G config
+tables or YAMLs. Standalone use of a filter script (debugging only) must point `--out` at
+`$SCRATCH/temp`, never at the results tree.
+
+## Checklist
+
+- [ ] Per-cell QC tables built from the CURRENT download (re-issued Portal files replace old ones)
+- [ ] Human thresholds mapped onto flags; blanks left at defaults; commands saved
+- [ ] Each cluster's `qc_thresholds.tsv` matches the human's values; guide rows = cells kept
+- [ ] Merged cluster: table rows = sum of constituents, 0 duplicate barcodes, comma-separated
+      `pseudobulk_annotation`, `submitter_comment`, annotation override if the human wants one
+- [ ] Config: IGVFDS key, `qc_guide` under `results/QC_plots/`, absolute `data_dir`/`output_dir`,
+      no `QC_pseudobulks` anywhere
+- [ ] Dry-run the driver before the real run
