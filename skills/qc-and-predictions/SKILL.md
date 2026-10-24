@@ -138,12 +138,12 @@ its default `--frip-min 0` drops FRiP = 0 cells). Output per cluster: `RNA_QC_pl
   on 2026-10-21).
 - Missing QC values are empty fields, not "NA". ~0.04% of cells have RNA but zero fragments;
   the plot script excludes them.
-- Details on guides, merged clusters and the threshold sheet: the `qc-filter-pseudobulks`
-  skill.
+- **Before making guides, read `references/qc-guides.md`:** threshold-to-flag mapping, guide
+  format, merged-cluster tables, and the checks to run.
 
 ## Step 3 — Human thresholds → real QC guides
 
-Give the user a TSV sheet (one row per cluster, threshold columns blank) — e.g.
+Details: `references/qc-guides.md`. Give the user a TSV sheet (one row per cluster, threshold columns blank) — e.g.
 `results/QC_plots/IGVFDS_qc_thresholds.tsv`. When filled, re-run `plot_per_cell_qc.R` per
 cluster with the human's values into `results/QC_plots/<IGVFDS>/<cluster>/` and verify every
 `qc_thresholds.tsv` equals the sheet and guide rows = cells retained.
