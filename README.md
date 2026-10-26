@@ -373,6 +373,68 @@ late in its job list rather than one clean abort at the start: that shape
 points at cache expiry mid-run, not a real compute failure, and the fix is
 just running it again.
 
+## Claude Code skill (`qc-and-predictions`)
+
+A [Claude Code](https://docs.claude.com/en/docs/claude-code) skill walks an agent
+through this pipeline end to end on a new IGVF primary-pseudobulk dataset: Portal
+download, per-cell QC plots, human thresholds, config, scE2G predictions, and IGVF
+Portal manifests ready for a human to validate and upload. It lives on this repo's
+orphan `skills` branch, not on a code branch, so one copy serves every branch and
+checkout:
+
+- `skills/qc-and-predictions/SKILL.md`, the entry point, with
+  `references/qc-guides.md` for the QC-guide, threshold and config detail;
+- `skills/qc-filter-pseudobulks/SKILL.md`, a pointer kept for the old skill name.
+
+You do not need any existing worktrees to use it.
+
+1. **Get the `skills` branch into its own directory.**
+   - No existing clone: clone just that branch (a few files, under 100 KB):
+     ```
+     git clone --branch skills --single-branch git@github.com:kaybrand/QC-and-Predictions.git QC-and-Predictions-skills
+     ```
+   - Already have a clone: add it as a worktree instead, which reuses the clone's history:
+     ```
+     git fetch origin skills
+     git worktree add ../QC-and-Predictions-skills skills
+     ```
+   Never check out a different branch in that directory; Claude reads the skills from it.
+2. **Make Claude Code load it.** Pick one route; using two loads each skill twice.
+   - As its own plugin: start Claude with `--plugin-dir`, which can be repeated next to
+     other plugins. The skills appear as `QC-and-Predictions-skills:qc-and-predictions`
+     and `QC-and-Predictions-skills:qc-filter-pseudobulks`.
+     ```
+     claude --plugin-dir /path/to/QC-and-Predictions-skills
+     ```
+   - Through a local checkout of the lab's EngreitzLabAgents plugin: add symlinks and
+     keep them out of that repo's git with a local-only exclude. Do not commit them to
+     EngreitzLabAgents. The skills appear as `EngreitzLabAgents:qc-and-predictions` and
+     `EngreitzLabAgents:qc-filter-pseudobulks`.
+     ```
+     cd /path/to/EngreitzLabAgents
+     for s in qc-and-predictions qc-filter-pseudobulks; do
+       ln -s /path/to/QC-and-Predictions-skills/skills/$s skills/$s
+       echo "/skills/$s" >> .git/info/exclude
+     done
+     ```
+   - As personal skills, available in every session: symlink them into your Claude
+     skills folder (`~/.claude/skills/`, or `$CLAUDE_CONFIG_DIR/skills/` if you set one).
+     ```
+     for s in qc-and-predictions qc-filter-pseudobulks; do
+       ln -s /path/to/QC-and-Predictions-skills/skills/$s ~/.claude/skills/$s
+     done
+     ```
+3. **Check:** start a new Claude session and run `/skills`; `qc-and-predictions` should be
+   listed.
+4. **Use it:** ask Claude to process, QC, run predictions for, or prepare Portal manifests
+   for a new IGVFDS dataset, or invoke the skill by its listed name (e.g.
+   `/EngreitzLabAgents:qc-and-predictions`). The skill keeps the hard rules of this repo's
+   `CLAUDE.md`: it never uploads to the Portal and never exposes the IGVF credentials;
+   manifests stop at `--mode preview` (`--mode validate` only with a human's OK), and
+   uploading is a human action.
+5. **Updates:** `git pull` in `QC-and-Predictions-skills/` to get changes. Make edits there
+   too, and commit and push them on the `skills` branch.
+
 ## IGVF Data Portal uploads
 
 `igvf-portal-submission` branch only (not present on the Synapse-only
