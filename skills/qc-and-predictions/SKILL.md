@@ -11,6 +11,9 @@ downloaded from the IGVF Portal → filtered multiome data → scE2G predictions
 manifest rows → uploaded by the user. Every command below was run for real.
 
 Works in the QC-and-Predictions repo (`$REPO` below, branch `igvf-portal-submission`).
+This skill lives on that repo's orphan `skills` branch, checked out once at
+`/oak/stanford/groups/engreitz/Projects/IGVF-E2GPillarProject/QC-and-Predictions-skills/`; edit and
+commit it there (it is the one writable place for the skill itself).
 **Read first:** `$REPO/CLAUDE.md` (hard rules) and the newest `$REPO/.baton/` file
 (`ls -t $REPO/.baton/ | head`). Batons hold the live status; this skill holds the method.
 
