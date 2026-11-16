@@ -143,12 +143,19 @@ def trained_model_file_alias(ctx):
     return make_alias(ctx.igvf, "scE2G", family(ctx.model), "trained_model")
 
 
+# The model SET alias suffix per family. scATAC's is the v1.3.1 Model Set
+# IGVFDS6433WTDK ("scE2G_scATAC_model_set"); "scE2G_scATAC_model" was never
+# created on the Portal. Multiome keeps the released "scE2G_Multiome_model".
+_TRAINED_MODEL_SET_SUFFIX = {"scATAC": "model_set"}
+
+
 def trained_model_set_alias(ctx):
     """The model SET -- for Sets-only fields (e.g. Prediction Set's
     input_file_sets)."""
     from .tables.prediction_tabular_files import family
 
-    return make_alias(ctx.igvf, "scE2G", family(ctx.model), "model")
+    fam = family(ctx.model)
+    return make_alias(ctx.igvf, "scE2G", fam, _TRAINED_MODEL_SET_SUFFIX.get(fam, "model"))
 
 
 def gene_list_alias(ctx):
