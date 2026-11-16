@@ -63,6 +63,8 @@ def build_alias(ctx, variant_name):
 
 
 def _row(ctx):
+    if refs.is_catlas(ctx):
+        return _catlas_row(ctx)
     # cell_type/cell_qualifier (added 2026-08-06): identical formula to
     # Principal Pseudobulk Set's own _row() -- same (dataset, cluster)-keyed
     # cell_metadata lookup, repeated per model since this table is
@@ -74,15 +76,51 @@ def _row(ctx):
             refs.principal_pseudobulk_set_alias(ctx),  # itself contains the RNA/ATAC files, "and more"
             refs.gene_list_curated_set_alias(ctx),  # fixed external curated gene list Set, added 2026-09-25
         ],
-        "documents": [
-            make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_pdf"),
-            make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_md"),
-        ],
+        "documents": _documents(ctx),
         "description": f"scE2G {family(ctx.model)} predictions for {ctx.dataset} {ctx.cluster} cells",
         "samples": subsamples.subsamples_by_frequency(ctx),  # raw values ARE Sample accessions already -- see module docstring
         "cell_type": f"/sample-terms/{metadata['cl_id']}/",
         "cell_qualifier": metadata["cell_qualifier"],
+        "submitter_comment": "Version 1",
     }
+
+
+def _catlas_row(ctx):
+    """CATlas (2026-11-16, per CATlas_upload_metadata_structure.md): the yang-li
+    PseudobulkSet replaces the Principal Pseudobulk Set as input, and samples/
+    cell_type/cell_qualifier all come from that Set's Portal record. No
+    submitter_comment -- the spec doesn't list one. cell_qualifier is omitted
+    when the Portal has none (true for every human set as of 2026-11-16)."""
+    metadata = refs.primary_pseudobulk_metadata(ctx)
+    row = {
+        "input_file_sets": [
+            refs.trained_model_set_alias(ctx),
+            refs.catlas_pseudobulk_set_alias(ctx),
+            refs.gene_list_curated_set_alias(ctx),
+        ],
+        "documents": _documents(ctx),
+        "description": f"scE2G {family(ctx.model)} predictions for {refs.catlas_description_label(ctx)} {ctx.cluster} cells",
+        "samples": refs.catlas_samples(ctx),
+        "cell_type": f"/sample-terms/{metadata['cl_id']}/",
+    }
+    if metadata["cell_qualifier"]:
+        row["cell_qualifier"] = metadata["cell_qualifier"]
+    return row
+
+
+def _documents(ctx):
+    return [
+        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_pdf"),
+        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_md"),
+    ]
+
+
+def _depends_on(ctx):
+    # CATlas inputs (yang-li PseudobulkSet, model Set, gene list Set) all already
+    # exist and are never uploaded here, so there is nothing to wait on.
+    if refs.is_catlas(ctx):
+        return []
+    return [("principal_pseudobulk_set", "")]
 
 
 TABLE = registry.register(
@@ -110,7 +148,6 @@ TABLE = registry.register(
             # on round 3 and nothing downstream of prediction_set will upload.
             "file_set_type": "element-gene links",
             "scope": "genome-wide",
-            "submitter_comment": "Version 1",
         },
         variants=[
             # name="" (not e.g. "default") deliberately -- every other table's
@@ -119,7 +156,7 @@ TABLE = registry.register(
             registry.VariantSpec(
                 name="",
                 build_row=_row,
-                depends_on=lambda ctx: [("principal_pseudobulk_set", "")],
+                depends_on=_depends_on,
             ),
         ],
     )

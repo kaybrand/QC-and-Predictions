@@ -164,6 +164,21 @@ def is_catlas(ctx):
     return "atac_frag_file" in ctx.cluster_cfg
 
 
+def _catlas_pseudobulk(ctx):
+    row = state.get_catlas_pseudobulk(ctx.conn, ctx.dataset, ctx.cluster)
+    if row is None:
+        raise ValueError(
+            f"{ctx.dataset}/{ctx.cluster}: no cached yang-li CATlas PseudobulkSet -- refresh the "
+            "cell_metadata cache (fetch_if_stale), or check the cluster name against the Portal alias"
+        )
+    if row.get("status") == "deleted":
+        raise ValueError(
+            f"{ctx.dataset}/{ctx.cluster}: yang-li PseudobulkSet {row['alias']} has been deleted on the "
+            "Portal -- refusing to link a Prediction Set to it"
+        )
+    return row
+
+
 def catlas_input_deleted(ctx):
     """True if this CATlas cluster's yang-li PseudobulkSet is cached as deleted
     on the Portal -- orchestrator.plan_table then skips every row for the
@@ -172,6 +187,33 @@ def catlas_input_deleted(ctx):
     it when a row is built, which surfaces as a manifest gap."""
     row = state.get_catlas_pseudobulk(ctx.conn, ctx.dataset, ctx.cluster)
     return bool(row) and row.get("status") == "deleted"
+
+
+def catlas_pseudobulk_set_alias(ctx):
+    """The yang-li PseudobulkSet this cluster's fragments came from, e.g.
+    "yang-li:catlas-human-pseudobulk-Bgl_51" -- taken from the cached Portal
+    record, not rebuilt from a formula. An input we never upload, so callers
+    need no depends_on entry for it."""
+    return _catlas_pseudobulk(ctx)["alias"]
+
+
+def catlas_samples(ctx):
+    """The yang-li PseudobulkSet's own `samples` (Sample accessions, Portal
+    order). Raises on an empty value rather than submitting none: a cache
+    row written before the `samples` column existed has NULL here until the
+    next fetch_if_stale."""
+    samples = _catlas_pseudobulk(ctx).get("samples")
+    if not samples:
+        raise ValueError(
+            f"{ctx.dataset}/{ctx.cluster}: cached CATlas PseudobulkSet has no samples -- the cache "
+            "predates the samples column or the Portal returned none; refresh it (fetch_if_stale)"
+        )
+    return samples.split(",")
+
+
+def catlas_description_label(ctx):
+    """"catlas-human" -> "CATlas human", for descriptions."""
+    return "CATlas " + ctx.dataset.split("-", 1)[1]
 
 
 def gene_list_alias(ctx):
