@@ -11,10 +11,9 @@ of that.
 
 file_set reuses refs.prediction_set_alias -- confirmed formula (2026-07-13).
 
-derived_from (the filtered ATAC fragment TabularFile) is resolved via
-refs.atac_fragment_alias, same as Prediction Tabular Files' full/elements
-rows -- delegates to the real filtered_atac_fragment_file TableSpec (see
-refs.py's own docstring).
+derived_from is refs.atac_input_alias, same as Prediction Tabular Files'
+full/elements rows: the yang-li fragments file for CATlas (2026-11-16), the
+filtered ATAC fragment TabularFile otherwise.
 
 submitted_file_name does NOT vary by model in the given path
 (.../{dataset}/{cluster}/ATAC_norm.bw) even though this table is
@@ -55,7 +54,7 @@ def _row(ctx):
         "content_type": "read-depth signal",
         "reference_files": ["IGVFFI7969JLFC", "IGVFFI0653VCGH"],
         "strand_specificity": "unstranded",
-        "derived_from": refs.atac_fragment_alias(ctx),
+        "derived_from": refs.atac_input_alias(ctx),
         "submitted_file_name": _path(ctx),
     }
 
@@ -84,7 +83,7 @@ TABLE = registry.register(
                 name="atac_bw",
                 build_row=_row,
                 required_paths=_required_paths,
-                depends_on=lambda ctx: [("prediction_set", ""), ("filtered_atac_fragment_file", "")],
+                depends_on=lambda ctx: [("prediction_set", ""), *refs.atac_input_dependencies(ctx)],
             ),
         ],
     )
