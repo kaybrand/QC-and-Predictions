@@ -50,7 +50,7 @@ def _row(ctx):
         "derived_from": prediction_table.build_alias(ctx, "elements_bed"),
         "description": (
             f"index file for annotated candidate elements in scE2G ({family(ctx.model)}) "
-            f"predictions for {ctx.dataset} {ctx.cluster} cells"
+            f"predictions for {refs.description_label(ctx)} {ctx.cluster} cells"
         ),
         "submitted_file_name": _path(ctx),
     }

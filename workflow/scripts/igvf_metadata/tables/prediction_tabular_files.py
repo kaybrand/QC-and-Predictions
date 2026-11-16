@@ -201,12 +201,6 @@ def _requires(path_fn):
     return _fn
 
 
-def _label(ctx):
-    """How descriptions name the dataset: "CATlas human" for CATlas, the
-    dataset label itself (e.g. igvf4) otherwise."""
-    return refs.catlas_description_label(ctx) if refs.is_catlas(ctx) else ctx.dataset
-
-
 def _full_row(ctx):
     # Confirmed 2026-07-16: the RNA count matrix is Multiome-only -- a scATAC
     # full's derived_from omits it, even though ATAC fragment file + elements
@@ -250,7 +244,7 @@ def _full_row(ctx):
         # The full file is unthresholded. Multiome keeps True so already-uploaded
         # rows don't change; CATlas follows its spec.
         "filtered": not refs.is_catlas(ctx),
-        "description": f"Full scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} cells",
+        "description": f"Full scE2G ({family(ctx.model)}) predictions for {refs.description_label(ctx)} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
         "file_format_specifications": specs,
         "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
@@ -263,7 +257,7 @@ def _thresholded_row(ctx):
         "content_type": "element to gene interactions",
         "file_format": "tsv",
         "filtered": True,
-        "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} cells",
+        "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {refs.description_label(ctx)} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
         "file_format_specifications": [
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
@@ -281,7 +275,7 @@ def _bedpe_row(ctx):
         "filtered": True,
         "description": (
             f"Bedpe file for genome browser visualization of thresholded scE2G ({family(ctx.model)}) "
-            f"predictions for {_label(ctx)} {ctx.cluster} cells"
+            f"predictions for {refs.description_label(ctx)} {ctx.cluster} cells"
         ),
         "derived_from": build_alias(ctx, "thresholded"),
         "file_format_specifications": [make_alias(ctx.igvf, "E2G_bedpe_file_format")],
@@ -310,7 +304,7 @@ def _elements_bed_row(ctx):
         # chr/start/end/ElementName.
         "file_format_type": "bed3+",
         "description": (
-            f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} "
+            f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {refs.description_label(ctx)} {ctx.cluster} "
             "cells for IGV visualization"
         ),
         "derived_from": refs.atac_input_alias(ctx),

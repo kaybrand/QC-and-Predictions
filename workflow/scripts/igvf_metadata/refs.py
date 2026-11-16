@@ -247,6 +247,12 @@ def catlas_description_label(ctx):
     return "CATlas " + ctx.dataset.split("-", 1)[1]
 
 
+def description_label(ctx):
+    """How file descriptions name the dataset: "CATlas human" for CATlas, the
+    dataset label itself (e.g. igvf4) otherwise."""
+    return catlas_description_label(ctx) if is_catlas(ctx) else ctx.dataset
+
+
 def gene_list_alias(ctx):
     """The fixed, externally-curated scE2G candidate gene list FILE -- for
     derived_from-shaped fields (e.g. Prediction Tabular Files' full row).
