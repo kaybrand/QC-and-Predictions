@@ -161,6 +161,12 @@ def main():
     )
     p.add_argument("--iu-register-path", default=None, help="override the default iu_register.py path")
     p.add_argument(
+        "--push-synapse", action="store_true",
+        help="upload mode only: also push the cell annotation register (cell_annotation_table.tsv) to "
+        "Synapse. Off by default -- without it (or synapse.enabled: true in the pipeline config) this "
+        "script contacts the IGVF Data Portal only; the register is still written to --manifest-dir.",
+    )
+    p.add_argument(
         "--until-done", action="store_true",
         help="repeat passes until nothing is pending. Dependency layers resolve one per pass "
              "(about six for a full dataset), so this drives a dataset to completion in a single "
@@ -257,6 +263,9 @@ def main():
         table_names=table_names,
         excluded=excluded,
         igvf_mode=args.igvf_mode,
+        # One opt-in for every Synapse write: the flag, or the same synapse.enabled
+        # config switch that gates the Snakemake Synapse manifest targets.
+        push_synapse=args.push_synapse or bool((config.get("synapse") or {}).get("enabled", False)),
     )
     if args.iu_register_path:
         run_kwargs["iu_register_path"] = args.iu_register_path

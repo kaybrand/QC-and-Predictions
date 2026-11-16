@@ -782,12 +782,18 @@ def _content_digest(path):
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def push_to_synapse(rows, manifest_dir=None, conn=None, force=False):
+def push_to_synapse(rows, manifest_dir=None, conn=None, force=False, push=True):
     """Write the shareable-rows TSV, and store it as a child of
     SYNAPSE_PARENT_ID **only if its content actually changed**.
 
+    push=False (2026-11-16; the default for every caller, which opts in via
+    manage_igvf_metadata.py --push-synapse or synapse.enabled): write the local
+    register only, with no Synapse login at all, so an IGVF upload never needs a
+    Synapse connection. The digest gate is left untouched, so the next opted-in
+    push still sees the change.
+
     Returns a status dict the caller can report:
-      {"status": "pushed"|"unchanged"|"empty", "rows": n, "digest": ..., "path": ...}
+      {"status": "pushed"|"unchanged"|"empty"|"local_only", "rows": n, "digest": ..., "path": ...}
     plus "entity_id"/"version" when a store() really happened.
 
     Change detection is by sha256 of the written file, compared against
@@ -810,6 +816,9 @@ def push_to_synapse(rows, manifest_dir=None, conn=None, force=False):
     path = os.path.join(manifest_dir or ".", SHAREABLE_TSV_NAME)
     _write_shareable_tsv(rows, path)
     digest = _content_digest(path)
+
+    if not push:
+        return {"status": "local_only", "rows": len(rows), "digest": digest, "path": path}
 
     if conn is not None and not force:
         if state.get_sync_state(conn, SYNAPSE_DIGEST_KEY) == digest:

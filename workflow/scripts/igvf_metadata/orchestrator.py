@@ -79,10 +79,11 @@ Principal Pseudobulk Set's payload-building depends on. Grouped/cached
 against EVERY cluster in the pipeline config (all_cluster_configs), not just
 this invocation's cluster_keys -- otherwise a later invocation for a
 different cluster subset, within the same TTL window, would find nothing
-cached for its own clusters. On a real upload pass (mode="upload"),
-cell_metadata.push_to_synapse() runs once at the end, re-publishing the
-"locked" subset of that cache to the shared Synapse
-space -- see cell_metadata.py for both.
+cached for its own clusters. On a real upload pass (mode="upload"), the
+"locked" subset of that cache is written once at the end as a local register
+(cell_annotation_table.tsv in manifest_dir), and pushed to the shared Synapse
+space only when the caller opts in (push_synapse=True) -- by default this
+module talks to the IGVF Data Portal and nothing else. See cell_metadata.py.
 """
 
 import csv
@@ -278,6 +279,9 @@ def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
             line(f" SYNAPSE  cell_annotation_table.tsv unchanged ({synapse['rows']} rows) -- not pushed")
         elif status == "empty":
             line(" SYNAPSE  no shareable annotation rows yet -- nothing to push")
+        elif status == "local_only":
+            line(f" SYNAPSE  not contacted -- cell_annotation_table.tsv written locally only "
+                 f"({synapse['rows']} rows, {synapse['path']}); opt in with --push-synapse")
 
     line()
     if mode == "upload" and pending:
@@ -662,6 +666,7 @@ def run(
     iu_register_path=portal_client.IU_REGISTER_DEFAULT_PATH,
     all_cluster_configs=None,
     output_dir=None,
+    push_synapse=False,
 ):
     """mode:
       "preview"  (default) -- plan + write TSVs only. No call to
@@ -681,6 +686,9 @@ def run(
     gets grouped/validated/cached for every cluster we know about, not
     discarded for every cluster except whichever narrow subset this one
     invocation happens to be uploading -- see cell_metadata.py.
+
+    push_synapse: upload mode only. False (default) writes the cell annotation
+    register locally and never contacts Synapse; True also pushes it.
     """
     if mode not in ("preview", "validate", "upload"):
         raise ValueError(f"mode must be one of preview/validate/upload, got {mode!r}")
@@ -830,14 +838,15 @@ def run(
 
     synapse_status = None
     if mode == "upload":
-        # Re-derive the shareable Cell Annotation table and push it to the E2G Pillar
-        # Synapse space ONLY IF ITS CONTENT CHANGED. Passing conn is what enables that
+        # Re-derive the shareable Cell Annotation table (always written locally) and,
+        # only when push_synapse is set, push it to the E2G Pillar Synapse space
+        # ONLY IF ITS CONTENT CHANGED. Passing conn is what enables that
         # gate (see cell_metadata.push_to_synapse): without it every pass of a
         # six-pass upload session stored an identical new Synapse version. Content is
         # compared by sha256, so "changed" means the locked annotation set actually
         # moved -- not merely that an upload happened.
         synapse_status = cell_metadata.push_to_synapse(
-            cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir, conn=conn
+            cell_metadata.build_shareable_rows(conn), manifest_dir=manifest_dir, conn=conn, push=push_synapse
         )
 
     _print_run_summary(mode, coverage_rows, uploaded_rows, failed_rows, synapse_status)
