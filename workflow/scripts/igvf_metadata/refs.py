@@ -78,7 +78,7 @@ functions (one per calling table's own semantics: ATAC fragment/index vs.
 RNA matrix workflow) even though the value happens to coincide today.
 """
 
-from . import registry, subsamples
+from . import registry, state, subsamples
 from .context import make_alias
 
 # Shared by qc_guide_to_atac_fragment_analysis_step_version_alias and
@@ -156,6 +156,22 @@ def trained_model_set_alias(ctx):
 
     fam = family(ctx.model)
     return make_alias(ctx.igvf, "scE2G", fam, _TRAINED_MODEL_SET_SUFFIX.get(fam, "model"))
+
+
+def is_catlas(ctx):
+    """CATlas clusters set atac_frag_file instead of qc_guide/pseudobulk_annotation
+    -- the same marker cell_metadata.derive_scopes keys on."""
+    return "atac_frag_file" in ctx.cluster_cfg
+
+
+def catlas_input_deleted(ctx):
+    """True if this CATlas cluster's yang-li PseudobulkSet is cached as deleted
+    on the Portal -- orchestrator.plan_table then skips every row for the
+    cluster, so no prediction built on deleted data is uploaded. A cluster with
+    no cache row at all is NOT treated as deleted; _catlas_pseudobulk raises for
+    it when a row is built, which surfaces as a manifest gap."""
+    row = state.get_catlas_pseudobulk(ctx.conn, ctx.dataset, ctx.cluster)
+    return bool(row) and row.get("status") == "deleted"
 
 
 def gene_list_alias(ctx):

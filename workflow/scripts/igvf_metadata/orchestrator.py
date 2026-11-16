@@ -90,7 +90,7 @@ import os
 import sys
 from datetime import datetime, timezone
 
-from . import cell_metadata, portal_client, registry, state
+from . import cell_metadata, portal_client, refs, registry, state
 from .context import Context
 
 # Per-dataset coverage artifact (manifest_dir/<dataset>/). Deliberately NOT one of
@@ -131,6 +131,7 @@ _OUTCOME_SECTIONS = {
     "planned-post": ("planned", "would be created"),
     "planned-patch": ("planned", "would be updated"),
     "skipped-family-gated": ("skipped", "not applicable to this model family"),
+    "skipped-input-deleted": ("skipped", "input PseudobulkSet deleted on the Portal"),
     "skipped-missing-file": ("gap", "no file on disk"),
     "invalid": ("gap", "payload failed validation"),
     "enabled-check-failed": ("gap", "could not evaluate"),
@@ -260,8 +261,10 @@ def _print_run_summary(mode, coverage_rows, uploaded, failed, synapse):
     skipped = buckets.get("skipped", [])
     if skipped:
         line()
-        line(f" NOT APPLICABLE                                           {len(skipped):>4} row(s)"
-             "   (model-family gated, expected)")
+        line(f" NOT APPLICABLE                                           {len(skipped):>4} row(s)   (expected)")
+        # Itemised (not just counted): a deleted input names the cluster that
+        # won't be uploaded, which the reader needs to see.
+        _print_rows(line, skipped, lambda r: _OUTCOME_SECTIONS[r["outcome"]][1])
 
     if synapse is not None:
         line()
@@ -482,6 +485,16 @@ def plan_table(conn, reader, table, cluster_keys, cluster_configs, igvf_cfg, scE
     for dataset, cluster, model, cluster_cfg in _iter_scopes(table, cluster_keys, cluster_configs, igvf_cfg):
         ctx = Context(dataset, cluster, model, cluster_cfg, igvf_cfg, scE2G_dir, data_dir, output_dir, conn=conn)
         model_key = model or ""
+        if refs.is_catlas(ctx) and refs.catlas_input_deleted(ctx):
+            # The cluster's input data is gone from the Portal: no row for it,
+            # in any table, may be uploaded. An expected exclusion, not a gap,
+            # so one deleted set doesn't stop a whole-dataset run.
+            log(f"SKIPPED {table.name} for {dataset}/{cluster}: input yang-li PseudobulkSet deleted on the Portal")
+            for variant in table.variants:
+                bump("skipped-input-deleted")
+                record_coverage(dataset, cluster, model_key, variant.name, "skipped-input-deleted",
+                                "input yang-li PseudobulkSet deleted on the Portal")
+            continue
         for variant in table.variants:
             # enabled() and required_paths() can both do real I/O (e.g.
             # prediction_tabular_files' score-threshold glob/parse, which raises on a
