@@ -73,7 +73,7 @@ TABLE = registry.register(
         constant_fields={
             "controlled_access": False,
             "derived_manually": False,
-            "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
+            "analysis_step_version": refs.RUN_SCE2G_ATAC_ONLY_ANALYSIS_STEP_VERSION,
         },
         scope_fields=_scope_fields,
         variants=[

@@ -76,7 +76,7 @@ TABLE = registry.register(
         required_columns=["aliases", "award", "lab", "file_format", "file_set", "content_type"],
         constant_fields={
             "normalized": True,
-            "analysis_step_version": "jesse-engreitz:analysis_step_v1_run_scE2G",
+            "analysis_step_version": refs.RUN_SCE2G_ATAC_ONLY_ANALYSIS_STEP_VERSION,
         },
         scope_fields=_scope_fields,
         variants=[

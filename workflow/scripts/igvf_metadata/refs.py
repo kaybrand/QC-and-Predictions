@@ -88,6 +88,13 @@ from .context import make_alias
 # 2026-08-25 to 28d9aece-0621-458c-949f-0314c8301228, replacing 9ae05eb5-ab8e-4ee0-b537-ab0ae7a1cf44.
 _PRINCIPAL_PSEUDOBULK_ANALYSIS_STEP_VERSION = "/analysis-step-versions/28d9aece-0621-458c-949f-0314c8301228/"
 
+# The scE2G scATAC (ATAC-only) run step, used as analysis_step_version by Prediction
+# Tabular Files, Signal Files, BEDPE Index File and Elements BED Index File. A module
+# constant, not a ctx function, because every caller sets it in a TableSpec's
+# constant_fields. On the Portal as of 2026-11-16
+# (/analysis-step-versions/fcbbcffd-b4be-4eb9-9882-385fc3c38d34/, sce2g-v1.3.1). Change it here only.
+RUN_SCE2G_ATAC_ONLY_ANALYSIS_STEP_VERSION = "jesse-engreitz:analysis_step_v1.3.1_run_scE2G_atac_only"
+
 # A different lab's (Anshul Kundaje's) namespace, not ours -- same constant as
 # tables/principal_pseudobulk_set.py's _KUNDAJE_ALIAS_PREFIX, duplicated here
 # rather than imported to avoid a refs<->tables circular import.
