@@ -197,6 +197,24 @@ def catlas_pseudobulk_set_alias(ctx):
     return _catlas_pseudobulk(ctx)["alias"]
 
 
+def catlas_fragments_alias(ctx):
+    """The yang-li fragments FILE scE2G ran on, e.g.
+    "yang-li:catlas-human-Bgl_51_fragments" -- for derived_from-shaped fields.
+    Read from the download ledger (portal_files), which recorded the Portal
+    alias of the exact file downloaded, not rebuilt from a formula. Never
+    uploaded here, so callers need no depends_on entry."""
+    rows = [
+        r for r in state.all_portal_files(ctx.conn, dataset=ctx.dataset, content_type="fragments")
+        if r["annotation"] == ctx.cluster
+    ]
+    if len(rows) != 1 or not rows[0]["alias"]:
+        raise ValueError(
+            f"{ctx.dataset}/{ctx.cluster}: expected exactly one aliased fragments file in the download "
+            f"ledger (portal_files), found {len(rows)}"
+        )
+    return rows[0]["alias"]
+
+
 def catlas_samples(ctx):
     """The yang-li PseudobulkSet's own `samples` (Sample accessions, Portal
     order). Raises on an empty value rather than submitting none: a cache

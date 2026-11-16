@@ -201,6 +201,19 @@ def _requires(path_fn):
     return _fn
 
 
+def _label(ctx):
+    """How descriptions name the dataset: "CATlas human" for CATlas, the
+    dataset label itself (e.g. igvf4) otherwise."""
+    return refs.catlas_description_label(ctx) if refs.is_catlas(ctx) else ctx.dataset
+
+
+def _atac_input_alias(ctx):
+    """The ATAC fragments FILE a prediction is derived from. CATlas uses the
+    yang-li file as downloaded; Multiome uses this pipeline's own Filtered ATAC
+    Fragment File."""
+    return refs.catlas_fragments_alias(ctx) if refs.is_catlas(ctx) else refs.atac_fragment_alias(ctx)
+
+
 def _full_row(ctx):
     # Confirmed 2026-07-16: the RNA count matrix is Multiome-only -- a scATAC
     # full's derived_from omits it, even though ATAC fragment file + elements
@@ -221,22 +234,32 @@ def _full_row(ctx):
     # creates -- see its own docstring in refs.py.
     parts = [
         refs.trained_model_file_alias(ctx),  # derived_from wants the FILE, not the Set
-        refs.atac_fragment_alias(ctx),
+        _atac_input_alias(ctx),
         build_alias(ctx, "elements_bed"),
         refs.gene_list_alias(ctx),
     ]
     if family(ctx.model) == "Multiome":
         parts.append(refs.rna_matrix_alias(ctx))
+    specs = [
+        make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
+        make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
+    ]
+    if refs.is_catlas(ctx):
+        # CATlas spec (2026-11-16): the full file also cites the feature table
+        # specs, since it carries the raw scE2G feature columns.
+        specs += [
+            make_alias(ctx.igvf, "scE2G_feature_table_file_format_specification_pdf"),
+            make_alias(ctx.igvf, "scE2G_feature_table_file_format_specification_md"),
+        ]
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
-        "filtered": True,
-        "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
+        # The full file is unthresholded. Multiome keeps True so already-uploaded
+        # rows don't change; CATlas follows its spec.
+        "filtered": not refs.is_catlas(ctx),
+        "description": f"Full scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
-        "file_format_specifications": [
-            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
-            make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_md"),
-        ],
+        "file_format_specifications": specs,
         "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _full_path(ctx),
     }
@@ -247,7 +270,7 @@ def _thresholded_row(ctx):
         "content_type": "element to gene interactions",
         "file_format": "tsv",
         "filtered": True,
-        "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
+        "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
         "file_format_specifications": [
             make_alias(ctx.igvf, "element_to_gene_interaction_predictions_file_format_pdf"),
@@ -265,7 +288,7 @@ def _bedpe_row(ctx):
         "filtered": True,
         "description": (
             f"Bedpe file for genome browser visualization of thresholded scE2G ({family(ctx.model)}) "
-            f"predictions for {ctx.dataset} {ctx.cluster} cells"
+            f"predictions for {_label(ctx)} {ctx.cluster} cells"
         ),
         "derived_from": build_alias(ctx, "thresholded"),
         "file_format_specifications": [make_alias(ctx.igvf, "E2G_bedpe_file_format")],
@@ -275,10 +298,9 @@ def _bedpe_row(ctx):
 
 
 def _elements_bed_row(ctx):
-    return {
+    row = {
         "content_type": "elements reference",
         "file_format": "bed",
-        "filtered": True,
         # REQUIRED for file_format bed/bigBed -- tabular_file.json says "Bed files
         # must specify their file format type", and omitting it is not a soft
         # warning: the whole row fails validation. The failure message is
@@ -295,10 +317,10 @@ def _elements_bed_row(ctx):
         # chr/start/end/ElementName.
         "file_format_type": "bed3+",
         "description": (
-            f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} "
+            f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} "
             "cells for IGV visualization"
         ),
-        "derived_from": refs.atac_fragment_alias(ctx),
+        "derived_from": _atac_input_alias(ctx),
         "file_format_specifications": [
             make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_pdf"),
             make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_md"),
@@ -306,6 +328,11 @@ def _elements_bed_row(ctx):
         "reference_files": _REFERENCE_FILES_ELEMENT_TO_GENE,
         "submitted_file_name": _elements_bed_path(ctx),
     }
+    # The CATlas spec lists no `filtered` for the elements bed (it is the
+    # unscored candidate universe); Multiome keeps its already-uploaded True.
+    if not refs.is_catlas(ctx):
+        row["filtered"] = True
+    return row
 
 
 def _scope_fields(ctx):
@@ -321,8 +348,14 @@ def _dep(*extra):
     return lambda ctx: [("prediction_set", "")] + list(extra)
 
 
+def _atac_input_deps(ctx):
+    """CATlas's fragments file is yang-li's, never uploaded here -- nothing to
+    wait on. Multiome waits on its own Filtered ATAC Fragment File."""
+    return [] if refs.is_catlas(ctx) else [("filtered_atac_fragment_file", "")]
+
+
 def _full_depends_on(ctx):
-    deps = [("prediction_set", ""), ("filtered_atac_fragment_file", ""), (TABLE_NAME, "elements_bed")]
+    deps = [("prediction_set", ""), *_atac_input_deps(ctx), (TABLE_NAME, "elements_bed")]
     if family(ctx.model) == "Multiome":
         deps.append(("filtered_rna_count_matrix", ""))
     return deps
@@ -364,7 +397,7 @@ TABLE = registry.register(
                 name="elements_bed",
                 build_row=_elements_bed_row,
                 required_paths=_requires(_elements_bed_path),
-                depends_on=_dep(("filtered_atac_fragment_file", "")),
+                depends_on=lambda ctx: [("prediction_set", ""), *_atac_input_deps(ctx)],
             ),
         ],
     )
