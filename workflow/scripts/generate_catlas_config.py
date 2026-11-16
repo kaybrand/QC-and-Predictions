@@ -139,6 +139,10 @@ igvf:
   # CATlas is scATAC-only; IgvfConfig defaults to Multiome, which would gate out
   # every cluster_model-scoped table (Prediction Set and its members).
   enabled_families: [scATAC]
+  # Only the Prediction Set and its members: CATlas uploads no principal
+  # pseudobulks, filtered files or QC documents. manage_igvf_metadata.py builds
+  # just these unless --tables says otherwise.
+  tables: [prediction_set, prediction_tabular_files, signal_files, bedpe_index_file, elements_bed_index_file]
 
 scE2G_options:
   max_cell_count: {max_cell_count}

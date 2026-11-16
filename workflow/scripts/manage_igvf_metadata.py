@@ -24,7 +24,7 @@ import sys
 import yaml
 
 sys.path.insert(0, __file__.rsplit("/", 1)[0])
-from igvf_metadata import orchestrator, state, tables  # noqa: F401 (tables import registers table modules)
+from igvf_metadata import orchestrator, registry, state, tables  # noqa: F401 (tables import registers table modules)
 from igvf_metadata.context import IgvfConfig
 from pipeline_paths import resolve_repo_relative, repo_root_from_script
 
@@ -154,7 +154,11 @@ def main():
         "validate: also run iu_register.py --dry-run (real schema validation, zero writes). "
         "upload: run iu_register.py for real -- requires explicitly choosing this.",
     )
-    p.add_argument("--tables", default="", help="comma-separated table names to restrict to (default: all registered)")
+    p.add_argument(
+        "--tables", default="",
+        help="comma-separated table names to restrict to (default: the pipeline config's igvf.tables "
+        "list if set, else all registered)",
+    )
     p.add_argument(
         "--igvf-mode", default="prod",
         help="passed through to igvf_utils, e.g. sandbox/prod -- defaults to prod (the real production portal)",
@@ -204,7 +208,20 @@ def main():
     excluded = parse_cluster_keys(
         args.excluded_cluster_keys, all_clusters, flag="--excluded-cluster-keys"
     )
-    table_names = [t for t in args.tables.split(",") if t] or None
+    # igvf.tables (2026-11-16): a dataset whose objects are only a subset of the
+    # registered tables (CATlas: the Prediction Set and its members) names them in
+    # its config, so run_pipeline.py's manifest stage -- which passes no --tables --
+    # never builds the others. An explicit --tables still wins.
+    table_names = (
+        [t for t in args.tables.split(",") if t]
+        or list((config.get("igvf") or {}).get("tables") or [])
+        or None
+    )
+    if table_names:
+        unknown = sorted(set(table_names) - {t.name for t in registry.all_specs()})
+        if unknown:
+            sys.exit(f"unknown table name(s) {unknown} (from --tables or igvf.tables); "
+                     f"registered: {sorted(t.name for t in registry.all_specs())}")
 
     # --excluded-cluster-keys must actually EXCLUDE. Until 2026-08-27 it was
     # record-only: orchestrator.run's sole use of it is state.mark_excluded, so a
