@@ -215,6 +215,19 @@ def catlas_fragments_alias(ctx):
     return rows[0]["alias"]
 
 
+def atac_input_alias(ctx):
+    """The ATAC fragments FILE scE2G outputs are derived from: the yang-li file
+    as downloaded for CATlas, this pipeline's own Filtered ATAC Fragment File
+    otherwise. Pair with atac_input_dependencies in the caller's depends_on."""
+    return catlas_fragments_alias(ctx) if is_catlas(ctx) else atac_fragment_alias(ctx)
+
+
+def atac_input_dependencies(ctx):
+    """depends_on entries for atac_input_alias: none for CATlas (yang-li's file
+    is never uploaded here), the Filtered ATAC Fragment File otherwise."""
+    return [] if is_catlas(ctx) else [("filtered_atac_fragment_file", "")]
+
+
 def catlas_samples(ctx):
     """The yang-li PseudobulkSet's own `samples` (Sample accessions, Portal
     order). Raises on an empty value rather than submitting none: a cache

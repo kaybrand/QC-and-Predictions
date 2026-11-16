@@ -207,13 +207,6 @@ def _label(ctx):
     return refs.catlas_description_label(ctx) if refs.is_catlas(ctx) else ctx.dataset
 
 
-def _atac_input_alias(ctx):
-    """The ATAC fragments FILE a prediction is derived from. CATlas uses the
-    yang-li file as downloaded; Multiome uses this pipeline's own Filtered ATAC
-    Fragment File."""
-    return refs.catlas_fragments_alias(ctx) if refs.is_catlas(ctx) else refs.atac_fragment_alias(ctx)
-
-
 def _full_row(ctx):
     # Confirmed 2026-07-16: the RNA count matrix is Multiome-only -- a scATAC
     # full's derived_from omits it, even though ATAC fragment file + elements
@@ -234,7 +227,7 @@ def _full_row(ctx):
     # creates -- see its own docstring in refs.py.
     parts = [
         refs.trained_model_file_alias(ctx),  # derived_from wants the FILE, not the Set
-        _atac_input_alias(ctx),
+        refs.atac_input_alias(ctx),
         build_alias(ctx, "elements_bed"),
         refs.gene_list_alias(ctx),
     ]
@@ -320,7 +313,7 @@ def _elements_bed_row(ctx):
             f"Annotated elements in scE2G ({family(ctx.model)}) predictions for {_label(ctx)} {ctx.cluster} "
             "cells for IGV visualization"
         ),
-        "derived_from": _atac_input_alias(ctx),
+        "derived_from": refs.atac_input_alias(ctx),
         "file_format_specifications": [
             make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_pdf"),
             make_alias(ctx.igvf, "elements_reference_bed_file_format_specification_md"),
@@ -348,14 +341,8 @@ def _dep(*extra):
     return lambda ctx: [("prediction_set", "")] + list(extra)
 
 
-def _atac_input_deps(ctx):
-    """CATlas's fragments file is yang-li's, never uploaded here -- nothing to
-    wait on. Multiome waits on its own Filtered ATAC Fragment File."""
-    return [] if refs.is_catlas(ctx) else [("filtered_atac_fragment_file", "")]
-
-
 def _full_depends_on(ctx):
-    deps = [("prediction_set", ""), *_atac_input_deps(ctx), (TABLE_NAME, "elements_bed")]
+    deps = [("prediction_set", ""), *refs.atac_input_dependencies(ctx), (TABLE_NAME, "elements_bed")]
     if family(ctx.model) == "Multiome":
         deps.append(("filtered_rna_count_matrix", ""))
     return deps
@@ -397,7 +384,7 @@ TABLE = registry.register(
                 name="elements_bed",
                 build_row=_elements_bed_row,
                 required_paths=_requires(_elements_bed_path),
-                depends_on=lambda ctx: [("prediction_set", ""), *_atac_input_deps(ctx)],
+                depends_on=lambda ctx: [("prediction_set", ""), *refs.atac_input_dependencies(ctx)],
             ),
         ],
     )
