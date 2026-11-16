@@ -518,6 +518,25 @@ def all_catlas_pseudobulks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_catlas_pseudobulks").fetchall()]
 
 
+def mark_unreturned_catlas_pseudobulks_deleted(conn, returned_keys):
+    """A cached CATlas row the latest wholesale GET did not return has been
+    deleted on the Portal (the GET filters status!=deleted). Upserts never
+    remove rows, so without this its stale September record would keep looking
+    live. Marks it status='deleted'; returns the (dataset, cluster) keys marked."""
+    stale = [
+        (r["dataset"], r["cluster"])
+        for r in conn.execute("SELECT dataset, cluster, status FROM cell_metadata_catlas_pseudobulks").fetchall()
+        if (r["dataset"], r["cluster"]) not in returned_keys and r["status"] != "deleted"
+    ]
+    with transaction(conn):
+        for dataset, cluster in stale:
+            conn.execute(
+                "UPDATE cell_metadata_catlas_pseudobulks SET status='deleted' WHERE dataset=? AND cluster=?",
+                (dataset, cluster),
+            )
+    return stale
+
+
 def get_catlas_pseudobulk(conn, dataset, cluster):
     row = conn.execute(
         "SELECT * FROM cell_metadata_catlas_pseudobulks WHERE dataset=? AND cluster=?", (dataset, cluster)

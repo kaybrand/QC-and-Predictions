@@ -403,6 +403,7 @@ def fetch_if_stale(conn, reader):
     catlas_rows = reader.get_multireport(_CATLAS_MULTIREPORT_QUERY)
     saved_catlas_count = 0
     catlas_parse_errors = []
+    returned_catlas_keys = set()
     for row in catlas_rows:
         aliases = row.get("aliases") or []
         alias = aliases[0] if aliases else None
@@ -413,6 +414,7 @@ def fetch_if_stale(conn, reader):
         except ValueError as e:
             catlas_parse_errors.append((alias, str(e)))
             continue
+        returned_catlas_keys.add((dataset, cluster))
         # Saved unconditionally, for EVERY species and EVERY cluster the portal
         # returns -- not scoped to this run's cluster_keys. See derive_scopes'
         # own docstring for why: a cluster's Cell Annotation here is a direct,
@@ -437,6 +439,15 @@ def fetch_if_stale(conn, reader):
         for alias, why in catlas_parse_errors:
             log(f"  {alias}: {why}")
     log(f"saved {saved_catlas_count} CATlas PseudobulkSet row(s) (every species) to the raw cache")
+    if catlas_parse_errors:
+        # An unparseable alias could be a live set we failed to key, so don't
+        # infer deletions from this fetch.
+        log("skipping deleted-set detection: some CATlas aliases could not be parsed")
+    else:
+        gone = state.mark_unreturned_catlas_pseudobulks_deleted(conn, returned_catlas_keys)
+        if gone:
+            log(f"{len(gone)} cached CATlas PseudobulkSet(s) no longer on the Portal, marked deleted: "
+                + ", ".join(f"{d}/{c}" for d, c in sorted(gone)))
     return True
 
 
