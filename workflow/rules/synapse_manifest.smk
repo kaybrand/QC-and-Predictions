@@ -30,6 +30,13 @@ CONFIRM_DELETE = str(SYNAPSE_CFG.get("confirm_delete", False))
 CONFIRM_OVERWRITE = str(SYNAPSE_CFG.get("confirm_overwrite", False))
 MANIFEST_DIR = os.path.join(RESULTS_DIR_BASE, "synapse_manifests")
 MODEL_TOKENS = "multiome_powerlaw_v3,scATAC_powerlaw_v3"
+# Reuses --model-tokens' substring-match mechanism to scope
+# manage_element_list_manifest's live "owned" query to ONLY element-list
+# entities in the shared predictions_parent_id folder -- "element_list"
+# appears in every {dataset}_{cluster}_element_list.bed(.gz)(.tbi) filename
+# and in no e2g prediction/gene-list filename, so this can't accidentally
+# match into the sibling predictions manifest's own files, and vice versa.
+ELEMENT_LIST_TOKENS = "element_list"
 
 
 def cluster_keys_arg():
@@ -63,6 +70,37 @@ def get_manifest_targets():
     ]
 
 
+def get_predictions_manifest_target():
+    """Re-hooks manage_predictions_manifest into `rule all` (dropped from the
+    default target 2026-08-03 -- see the Snakefile's own docstring). Scoped to
+    just the predictions manifest, not all four of get_manifest_targets(): that
+    is the one covering get_reformat_prediction_files() (the reformatted,
+    portal-format scE2G prediction sets, thresholded and unthresholded -- NOT
+    element lists, see get_element_list_manifest_target() below), which is
+    what needs to stay in sync with Synapse as clusters finish reformatting.
+
+    Empty in local_only mode (matching get_reformat_prediction_files() itself
+    returning [] there) and whenever there is nothing upload-eligible yet --
+    local_only's whole point is zero network contact, and manage_synapse_manifest.py
+    logs in to Synapse unconditionally, even under --dry-run true, the moment it
+    runs at all."""
+    if PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
+        return []
+    return [os.path.join(MANIFEST_DIR, "predictions_manifest.tsv")]
+
+
+def get_element_list_manifest_target():
+    """Same gating as get_predictions_manifest_target(), for
+    manage_element_list_manifest -- split into its own manifest 2026-09-21 so
+    element lists can be reviewed/synced independently of prediction sets
+    (they land in the same Synapse parent folder, just a different local
+    review artifact and a separate --model-tokens scope, see
+    ELEMENT_LIST_TOKENS above)."""
+    if PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
+        return []
+    return [os.path.join(MANIFEST_DIR, "element_list_manifest.tsv")]
+
+
 rule manage_filtered_data_manifest:
     input:
         get_filtered_data_files(),
@@ -92,7 +130,7 @@ rule manage_filtered_data_manifest:
 
 rule manage_predictions_manifest:
     input:
-        get_reformat_output_files(),
+        get_reformat_prediction_files(),
     output:
         update(os.path.join(MANIFEST_DIR, "predictions_manifest.tsv")),
     params:
@@ -110,6 +148,41 @@ rule manage_predictions_manifest:
         --cluster-keys "{params.cluster_keys}" \
         --nested \
         --model-tokens {MODEL_TOKENS} \
+        --manifest-out {output} \
+        --dry-run {DRY_RUN} \
+        --confirm-delete {CONFIRM_DELETE} \
+        --confirm-overwrite {CONFIRM_OVERWRITE} \
+        {input}
+        """
+
+
+rule manage_element_list_manifest:
+    # Same Synapse parent folder as manage_predictions_manifest (element lists
+    # are nested under the same {dataset}/{cluster}/ as the e2g files) -- kept
+    # as its own rule/manifest/review-artifact so element lists sync on their
+    # own schedule, independent of prediction-set changes. ELEMENT_LIST_TOKENS
+    # scopes the live "owned" query to just element-list entities, so this
+    # rule can never see (and therefore never flag as stale) the sibling
+    # predictions manifest's own files in the same folder, or vice versa.
+    input:
+        get_reformat_element_list_files(),
+    output:
+        update(os.path.join(MANIFEST_DIR, "element_list_manifest.tsv")),
+    params:
+        parent_id=SYNAPSE_CFG.get("predictions_parent_id", ""),
+        cluster_keys=cluster_keys_arg(),
+    conda:
+        "../envs/post_process.yaml"
+    resources:
+        mem_mb=determine_mem_mb,
+    shell:
+        """
+        python {workflow.basedir}/scripts/manage_synapse_manifest.py \
+        --product element_list \
+        --parent-id {params.parent_id} \
+        --cluster-keys "{params.cluster_keys}" \
+        --nested \
+        --model-tokens {ELEMENT_LIST_TOKENS} \
         --manifest-out {output} \
         --dry-run {DRY_RUN} \
         --confirm-delete {CONFIRM_DELETE} \

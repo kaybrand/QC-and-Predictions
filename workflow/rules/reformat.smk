@@ -122,7 +122,7 @@ def portal_link_alias(dataset, cluster, model, variant):
     return _ptf_build_alias(ctx, variant)
 
 
-def get_reformat_output_files():
+def get_reformat_prediction_files():
     # REFORMAT_ELIGIBLE_CLUSTERS (common.smk), not UPLOAD_ELIGIBLE_CLUSTERS --
     # portal_cell_metadata() above raises if a (dataset, cluster) has no
     # Cell Annotation. Requesting reformat output for a quality-passing cluster
@@ -134,6 +134,14 @@ def get_reformat_output_files():
     # empty there. That is what makes `--omit-from reformat_predictions
     # reformat_predictions_thresholded reformat_lists` unnecessary -- and the
     # nargs='+' target-swallowing footgun that flag carries avoidable entirely.
+    #
+    # e2g prediction sets (full + thresholded) ONLY -- element lists live in
+    # get_reformat_element_list_files() instead. Split out 2026-09-21 so the
+    # Synapse predictions manifest and element-list manifest
+    # (manage_predictions_manifest / manage_element_list_manifest,
+    # synapse_manifest.smk) can be reviewed and synced independently. Gene
+    # lists are no longer a pipeline output at all as of 2026-09-25 -- see
+    # igvf_metadata/tables/prediction_tabular_files.py's module docstring.
     files = []
     for dataset, cluster in REFORMAT_ELIGIBLE_CLUSTERS:
         models = config["clusters"][dataset][cluster]["models"]
@@ -141,12 +149,27 @@ def get_reformat_output_files():
             threshold = get_model_threshold(config["scE2G_dir"], model)
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}.e2g.tsv.gz"))
             files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_scE2G_{model}_threshold{threshold}.e2g.tsv.gz"))
-        # element_list sources from Neighborhoods/EnhancerList.bed (see
-        # reformat_element_list below), which every reformat-eligible cluster
-        # has regardless of model.
+    return files
+
+
+def get_reformat_element_list_files():
+    # element_list sources from Neighborhoods/EnhancerList.bed (see
+    # reformat_element_list below), which every reformat-eligible cluster has
+    # regardless of model. Split out of get_reformat_prediction_files() (see
+    # its own docstring) so element lists get their own Synapse manifest.
+    files = []
+    for dataset, cluster in REFORMAT_ELIGIBLE_CLUSTERS:
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz"))
         files.append(os.path.join(RESULTS_DIR_BASE, dataset, cluster, f"{dataset}_{cluster}_element_list.bed.gz.tbi"))
     return files
+
+
+def get_reformat_output_files():
+    # Union of the two above -- used by rule_all/portal_reformat, which want
+    # every reformat output regardless of kind. Use the split functions
+    # directly (e.g. in synapse_manifest.smk) wherever predictions vs.
+    # element lists need to be tracked/synced separately.
+    return get_reformat_prediction_files() + get_reformat_element_list_files()
 
 
 rule reformat_predictions:
