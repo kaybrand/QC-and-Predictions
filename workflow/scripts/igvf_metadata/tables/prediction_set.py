@@ -113,8 +113,8 @@ def _catlas_row(ctx):
 
 def _documents(ctx):
     return [
-        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_pdf"),
-        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_md"),
+        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_excl_gene_pdf"),
+        make_alias(ctx.igvf, "E2G_prediction_set_file_format_specs_excl_gene_md"),
     ]
 
 
