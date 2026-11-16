@@ -88,9 +88,11 @@ def _row(ctx):
 def _catlas_row(ctx):
     """CATlas (2026-11-16, per CATlas_upload_metadata_structure.md): the yang-li
     PseudobulkSet replaces the Principal Pseudobulk Set as input, and samples/
-    cell_type/cell_qualifier all come from that Set's Portal record. No
-    submitter_comment -- the spec doesn't list one. cell_qualifier is omitted
-    when the Portal has none (true for every human set as of 2026-11-16)."""
+    cell_type/cell_qualifier all come from that Set's Portal record.
+    cell_qualifier is omitted when the Portal has none (true for every human
+    set as of 2026-11-16). submitter_comment "Version 1" flags predictions made
+    on "in progress" pseudobulks, same as Multiome -- every human yang-li set is
+    "in progress" as of 2026-11-16."""
     metadata = refs.primary_pseudobulk_metadata(ctx)
     row = {
         "input_file_sets": [
@@ -102,6 +104,7 @@ def _catlas_row(ctx):
         "description": f"scE2G {family(ctx.model)} predictions for {refs.catlas_description_label(ctx)} {ctx.cluster} cells",
         "samples": refs.catlas_samples(ctx),
         "cell_type": f"/sample-terms/{metadata['cl_id']}/",
+        "submitter_comment": "Version 1",
     }
     if metadata["cell_qualifier"]:
         row["cell_qualifier"] = metadata["cell_qualifier"]
