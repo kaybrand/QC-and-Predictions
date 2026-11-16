@@ -136,6 +136,9 @@ pipeline_mode: {pipeline_mode}
 # QC_pseudobulks-igvf-portal-submission.
 igvf:
   state_db_path: {state_db}
+  # CATlas is scATAC-only; IgvfConfig defaults to Multiome, which would gate out
+  # every cluster_model-scoped table (Prediction Set and its members).
+  enabled_families: [scATAC]
 
 scE2G_options:
   max_cell_count: {max_cell_count}
