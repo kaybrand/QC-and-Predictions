@@ -230,6 +230,7 @@ def _full_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
+        "filtered": True,
         "description": f"Full scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": ",".join(parts),
         "file_format_specifications": [
@@ -245,6 +246,7 @@ def _thresholded_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "tsv",
+        "filtered": True,
         "description": f"Thresholded scE2G ({family(ctx.model)}) predictions for {ctx.dataset} {ctx.cluster} cells",
         "derived_from": build_alias(ctx, "full"),
         "file_format_specifications": [
@@ -260,6 +262,7 @@ def _bedpe_row(ctx):
     return {
         "content_type": "element to gene interactions",
         "file_format": "bedpe",
+        "filtered": True,
         "description": (
             f"Bedpe file for genome browser visualization of thresholded scE2G ({family(ctx.model)}) "
             f"predictions for {ctx.dataset} {ctx.cluster} cells"
@@ -275,6 +278,7 @@ def _elements_bed_row(ctx):
     return {
         "content_type": "elements reference",
         "file_format": "bed",
+        "filtered": True,
         # REQUIRED for file_format bed/bigBed -- tabular_file.json says "Bed files
         # must specify their file format type", and omitting it is not a soft
         # warning: the whole row fails validation. The failure message is
@@ -333,7 +337,6 @@ TABLE = registry.register(
         required_columns=["aliases", "award", "lab", "content_type", "controlled_access", "file_format", "file_set"],
         constant_fields={
             "controlled_access": False,
-            "filtered": True,
             "derived_manually": False,
             "analysis_step_version": refs.RUN_SCE2G_ATAC_ONLY_ANALYSIS_STEP_VERSION,
         },
