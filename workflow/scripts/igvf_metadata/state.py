@@ -167,6 +167,7 @@ CREATE TABLE IF NOT EXISTS cell_metadata_catlas_pseudobulks (
     portal_id TEXT,
     status TEXT,
     fetched_at TEXT NOT NULL,
+    samples TEXT,  -- comma-joined Sample accessions, portal order (Prediction Set's `samples`)
     PRIMARY KEY (dataset, cluster)
 );
 
@@ -248,6 +249,9 @@ _ADDED_COLUMNS = {
     "portal_files": {
         "review_reasons": "TEXT",
         "s3_uri": "TEXT",
+    },
+    "cell_metadata_catlas_pseudobulks": {
+        "samples": "TEXT",
     },
 }
 
@@ -485,14 +489,15 @@ def all_principal_pseudobulks(conn):
 
 
 def upsert_catlas_pseudobulk(
-    conn, dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now
+    conn, dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now,
+    samples=None,
 ):
     with transaction(conn):
         conn.execute(
             """INSERT INTO cell_metadata_catlas_pseudobulks
                (dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id,
-                status, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                status, fetched_at, samples)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(dataset, cluster) DO UPDATE SET
                    alias=excluded.alias,
                    cell_annotation=excluded.cell_annotation,
@@ -502,13 +507,22 @@ def upsert_catlas_pseudobulk(
                    cell_qualifier=excluded.cell_qualifier,
                    portal_id=excluded.portal_id,
                    status=excluded.status,
-                   fetched_at=excluded.fetched_at""",
-            (dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now),
+                   fetched_at=excluded.fetched_at,
+                   samples=excluded.samples""",
+            (dataset, cluster, alias, cell_annotation, cl_id, term_id, term_name, cell_qualifier, portal_id, status, now,
+             samples),
         )
 
 
 def all_catlas_pseudobulks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM cell_metadata_catlas_pseudobulks").fetchall()]
+
+
+def get_catlas_pseudobulk(conn, dataset, cluster):
+    row = conn.execute(
+        "SELECT * FROM cell_metadata_catlas_pseudobulks WHERE dataset=? AND cluster=?", (dataset, cluster)
+    ).fetchone()
+    return dict(row) if row else None
 
 
 _PORTAL_FILE_FIELDS = (

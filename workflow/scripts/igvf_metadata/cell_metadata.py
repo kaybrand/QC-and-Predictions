@@ -131,7 +131,7 @@ _CATLAS_LAB_ID = "/labs/yang-li/"
 _CATLAS_MULTIREPORT_QUERY = (
     "type=PseudobulkSet&status%21=deleted&lab.%40id=%2Flabs%2Fyang-li%2F&limit=all"
     "&field=%40id&field=aliases&field=cell_annotation&field=cell_qualifier&field=cell_type"
-    "&field=cell_type.term_name&field=cell_type.term_id&field=status"
+    "&field=cell_type.term_name&field=cell_type.term_id&field=status&field=samples"
 )
 
 # The fixed marker in every CATlas PseudobulkSet alias, e.g.
@@ -225,6 +225,15 @@ def _term_id_from_cell_type(cell_type):
     if not isinstance(cell_type, dict):
         return None
     return cell_type.get("term_id") or None
+
+
+def _sample_accessions(samples):
+    """Embedded Sample objects (e.g. {"accession": "IGVFSM8246BZUO", "@id":
+    "/tissues/IGVFSM8246BZUO/", ...}) -> comma-joined accessions, portal order
+    kept. Accessions, not @ids, to match what the Multiome Prediction Sets
+    already submit as `samples`. None if the portal returned no samples."""
+    accessions = [s.get("accession") for s in samples or [] if isinstance(s, dict) and s.get("accession")]
+    return ",".join(accessions) or None
 
 
 def _local_subsamples(cluster_keys, cluster_configs):
@@ -420,6 +429,7 @@ def fetch_if_stale(conn, reader):
             portal_id=row.get("@id"),
             status=row.get("status"),
             now=now,
+            samples=_sample_accessions(row.get("samples")),
         )
         saved_catlas_count += 1
     if catlas_parse_errors:
