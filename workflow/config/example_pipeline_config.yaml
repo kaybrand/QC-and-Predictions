@@ -164,6 +164,10 @@ exclusion:
     # rule instantiated for them, unless `predictions_on_everything_but_do_not_upload` is set.
 
 synapse:
+  # Opt-in for EVERY Synapse write: the predictions/element-list manifest targets in
+  # `rule all`, and manage_igvf_metadata.py's cell annotation push. Off, the pipeline
+  # talks to the IGVF Data Portal only. Same as passing --push-synapse for the push.
+  enabled: false
   dry_run: true             # default; upload steps never push for real until explicitly disabled
   confirm_delete: false     # default; stale/excluded entity deletion always requires explicit opt-in
   confirm_overwrite: false  # default; overwriting an EXISTING entity in the shared "Multiome datasets" folder requires explicit opt-in

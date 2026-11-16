@@ -173,6 +173,23 @@ exclusion:
     min_cell_count: {min_cell_count}
     min_fragments_total: {min_fragments_total}
 
+# Only predictions_parent_id: with synapse.enabled, `rule all` (Snakefile) adds the
+# predictions and element-list manifests (get_predictions_manifest_target() /
+# get_element_list_manifest_target(), synapse_manifest.smk), which both sync into
+# this parent -- reformatted scE2G scATAC prediction sets and element lists (CATlas
+# has no multiome_powerlaw_v3 model). The other three manifests
+# (filtered_data/candidates/features) are never in rule all, so their parent ids
+# are deliberately omitted here.
+synapse:
+  # Opt-in for EVERY Synapse write: the predictions/element-list manifest targets in
+  # `rule all`, and manage_igvf_metadata.py's cell annotation push. Off, the pipeline
+  # talks to the IGVF Data Portal only. Same as passing --push-synapse for the push.
+  enabled: false
+  dry_run: true             # default; upload steps never push for real until explicitly disabled
+  confirm_delete: false     # default; stale/excluded entity deletion always requires explicit opt-in
+  confirm_overwrite: false  # default; overwriting an EXISTING entity in the shared "Multiome datasets" folder requires explicit opt-in
+  predictions_parent_id: syn77523852     # CATlas-specific destination (not the shared syn53469845 "Multiome datasets" collaborative folder); {{dataset}}/{{cluster}}/{{file}}
+
 clusters:
   {dataset}:
 '''

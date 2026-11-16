@@ -3,11 +3,23 @@ QC-and-Predictions: end-to-end pipeline from QC-filtered pseudobulks to
 scE2G data products, for one or more clusters across one or more datasets at
 a time.
 
-igvf-portal-submission branch (this one): `rule all` deliberately excludes
-Synapse manifest generation (2026-08-03) -- Synapse and the IGVF Data Portal
-are separate, independently-developed destinations (see README's "Where this
-fits"); `rules/synapse_manifest.smk` is still included and its rules are
-still individually runnable, just not part of this branch's default target.
+igvf-portal-submission branch (this one): `rule all` excluded Synapse manifest
+generation entirely from 2026-08-03 until 2026-09-21 -- Synapse and the IGVF
+Data Portal are separate, independently-developed destinations (see README's
+"Where this fits"). `rule all` now re-includes two of the four
+get_manifest_targets() (synapse_manifest.smk): predictions
+(get_predictions_manifest_target(), reformatted scE2G prediction sets,
+thresholded and unthresholded) and element lists
+(get_element_list_manifest_target()) -- split into separate manifests/rules
+2026-09-21 so each can be reviewed and synced on its own schedule, even though
+both land in the same Synapse parent folder. Both are OPT-IN (2026-11-16):
+included only when the pipeline config sets synapse.enabled: true, so by default
+a run contacts the IGVF Data Portal and never Synapse. When enabled they stay in
+sync with Synapse as clusters finish reformatting, and are still gated off in
+local_only mode and whenever nothing is upload-eligible yet, same as the
+reformat targets themselves. The other three manifests (filtered_data/candidates/features)
+remain deliberately out of the default target -- `rules/synapse_manifest.smk`
+is still included and their rules are still individually runnable on demand.
 IGVF Portal metadata upload is its own standalone step
 (workflow/scripts/manage_igvf_metadata.py), not yet Snakemake-integrated.
 
@@ -108,6 +120,8 @@ rule all:
         get_qc_stats_targets(),
         get_igv_track_files(),
         get_rna_matrix_packages(),
+        get_predictions_manifest_target(),
+        get_element_list_manifest_target(),
     default_target: True
 
 

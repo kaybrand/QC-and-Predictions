@@ -28,6 +28,11 @@ SYNAPSE_CFG = config.get("synapse", {})
 DRY_RUN = str(SYNAPSE_CFG.get("dry_run", True))
 CONFIRM_DELETE = str(SYNAPSE_CFG.get("confirm_delete", False))
 CONFIRM_OVERWRITE = str(SYNAPSE_CFG.get("confirm_overwrite", False))
+# Opt-in (2026-11-16): `rule all` only includes Synapse manifest targets when
+# synapse.enabled is true, so a pipeline run never needs a Synapse connection
+# (manage_synapse_manifest.py logs in even under --dry-run true). The rules stay
+# runnable by name either way.
+SYNAPSE_ENABLED = bool(SYNAPSE_CFG.get("enabled", False))
 MANIFEST_DIR = os.path.join(RESULTS_DIR_BASE, "synapse_manifests")
 MODEL_TOKENS = "multiome_powerlaw_v3,scATAC_powerlaw_v3"
 # Reuses --model-tokens' substring-match mechanism to scope
@@ -79,12 +84,13 @@ def get_predictions_manifest_target():
     element lists, see get_element_list_manifest_target() below), which is
     what needs to stay in sync with Synapse as clusters finish reformatting.
 
-    Empty in local_only mode (matching get_reformat_prediction_files() itself
+    Empty unless synapse.enabled is true (see SYNAPSE_ENABLED), and empty in
+    local_only mode (matching get_reformat_prediction_files() itself
     returning [] there) and whenever there is nothing upload-eligible yet --
     local_only's whole point is zero network contact, and manage_synapse_manifest.py
     logs in to Synapse unconditionally, even under --dry-run true, the moment it
     runs at all."""
-    if PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
+    if not SYNAPSE_ENABLED or PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
         return []
     return [os.path.join(MANIFEST_DIR, "predictions_manifest.tsv")]
 
@@ -96,7 +102,7 @@ def get_element_list_manifest_target():
     (they land in the same Synapse parent folder, just a different local
     review artifact and a separate --model-tokens scope, see
     ELEMENT_LIST_TOKENS above)."""
-    if PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
+    if not SYNAPSE_ENABLED or PIPELINE_MODE == "local_only" or not UPLOAD_ELIGIBLE_CLUSTERS:
         return []
     return [os.path.join(MANIFEST_DIR, "element_list_manifest.tsv")]
 
