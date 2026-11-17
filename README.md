@@ -8,6 +8,9 @@ merged into a code branch.
 - `skills/qc-and-predictions/` — run the pipeline end to end on a new IGVF
   primary-pseudobulk dataset; `references/qc-guides.md` has the QC-guide detail.
 - `skills/qc-filter-pseudobulks/` — pointer kept for the old skill name.
+- `skills/igvf-portal-query/` — read-only Portal lookups, counts, and group-by
+  tallies (e.g. "how many PredictionSets use X", "unique cell types, mine vs
+  everyone's"); `references/query-recipes.md` has runnable examples.
 
 Claude loads these through the EngreitzLabAgents plugin: the local checkout's
 `skills/<name>` is a git-ignored symlink to `skills/<name>` here, so every session
